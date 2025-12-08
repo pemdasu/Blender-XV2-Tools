@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- Added support for importing SCDs with proper bone linking
+
 ## 1.0.1
 
 - Fix EMD export ignoring sharp edges
