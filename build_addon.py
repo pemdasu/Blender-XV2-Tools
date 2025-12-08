@@ -90,6 +90,8 @@ def build(
     version = version_override or _read_version(src_dir / "__init__.py")
 
     out_dir = output_dir or (root / "build")
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     _write_changelog(version, root, out_dir)
@@ -116,6 +118,10 @@ def build(
         root_dir=out_dir,
         base_dir=package_name,
     )
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir)
+
     return Path(zip_path)
 
 

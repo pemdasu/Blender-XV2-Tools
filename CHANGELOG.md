@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Fix EMD export ignoring sharp edges
+
 ## 1.0.0
 
 - Initial release
