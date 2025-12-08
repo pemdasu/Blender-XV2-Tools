@@ -1,0 +1,3 @@
+bpy==4.2.15
+fake-bpy-module-3.6
+ruff

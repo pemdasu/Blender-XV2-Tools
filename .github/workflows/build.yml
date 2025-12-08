@@ -1,0 +1,42 @@
+name: manual-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version override"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # needed to read tags
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Determine version from latest tag (if no input)
+        id: version
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build addon zip
+        run: |
+          VERSION_INPUT="${{ inputs.version }}"
+          if [ -z "$VERSION_INPUT" ]; then
+            VERSION_INPUT="${{ steps.version.outputs.version }}"
+          fi
+          python build_addon.py --version "$VERSION_INPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender_xv2_tools
+          path: build/*
