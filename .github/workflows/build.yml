@@ -21,22 +21,37 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Determine version from latest tag (if no input)
+      - name: Resolve version
         id: version
-        run: |
-          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      - name: Build addon zip
         run: |
           VERSION_INPUT="${{ inputs.version }}"
           if [ -z "$VERSION_INPUT" ]; then
-            VERSION_INPUT="${{ steps.version.outputs.version }}"
+            VERSION_INPUT=$(git describe --tags --abbrev=0 2>/dev/null || true)
           fi
-          python build_addon.py --version "$VERSION_INPUT"
+          if [ -z "$VERSION_INPUT" ]; then
+            VERSION_INPUT=$(python -c "from pathlib import Path; import build_addon; print(build_addon._read_version(Path('src/__init__.py')))")
+          fi
+          if [ -z "$VERSION_INPUT" ]; then
+            echo "Unable to determine version" >&2
+            exit 1
+          fi
+          echo "value=$VERSION_INPUT" >> "$GITHUB_OUTPUT"
+
+      - name: Build addon zip
+        run: |
+          python build_addon.py --version "${{ steps.version.outputs.value }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: blender_xv2_tools
           path: build/*
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.value }}
+          name: Blender XV2 Tools ${{ steps.version.outputs.value }}
+          body_path: build/CHANGELOG.md
+          files: build/*.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
