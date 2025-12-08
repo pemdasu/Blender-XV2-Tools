@@ -1,4 +1,6 @@
+import contextlib
 import os
+from pathlib import Path
 
 import bpy
 from bpy.props import (
@@ -18,7 +20,11 @@ from .ui import (
     EMD_UL_texture_samplers,
     EMDTextureSamplerPropertyGroup,
     PROPERTIES_PT_emd_texture_samplers,
+    SCDLinkSettings,
     VIEW3D_PT_emd_texture_samplers,
+    VIEW3D_PT_scd_link,
+    XV2_OT_scd_link_to_armature,
+    link_scd_armatures,
 )
 from .xv2.EMD.exporter import export_selected
 from .xv2.EMD.importer import import_emd
@@ -99,27 +105,20 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         else:
             paths.append(self.filepath)
 
-        arm_obj = None
-        esk = None
         esk_path = "" if self.auto_detect_esk else self.esk_path
 
-        if paths:
-            first = paths[0]
-            arm_obj, esk = import_emd(
-                first,
-                esk_path,
-                self.import_custom_normals,
-                self.import_tangents,
-                self.merge_by_distance,
-                self.merge_distance,
-                self.tris_to_quads,
-                self.split_into_submeshes,
-                return_armature=True,
-                preserve_structure=self.preserve_structure,
-            )
+        def is_scd_path(p: str) -> bool:
+            return "_scd" in Path(p).stem.lower()
 
-        for path in paths[1:]:
-            import_emd(
+        # Import non-SCD first to get the main armature, then SCD files.
+        paths_sorted = sorted(paths, key=lambda p: 1 if is_scd_path(p) else 0)
+
+        main_arm_obj = None
+        for path in paths_sorted:
+            scd_file = is_scd_path(path)
+            shared = None if scd_file else main_arm_obj
+
+            arm_obj, esk = import_emd(
                 path,
                 esk_path,
                 self.import_custom_normals,
@@ -128,9 +127,16 @@ class IMPORT_OT_emd(Operator, ImportHelper):
                 self.merge_distance,
                 self.tris_to_quads,
                 self.split_into_submeshes,
-                shared_armature=arm_obj,
+                shared_armature=shared,
+                return_armature=True,
                 preserve_structure=self.preserve_structure,
             )
+
+            if not scd_file and main_arm_obj is None:
+                main_arm_obj = arm_obj
+
+            if scd_file and main_arm_obj is not None and arm_obj is not None:
+                link_scd_armatures(arm_obj, main_arm_obj)
 
         return {"FINISHED"}
 
@@ -194,15 +200,34 @@ classes = [
     EMD_OT_texture_sampler_sync_props,
     VIEW3D_PT_emd_texture_samplers,
     PROPERTIES_PT_emd_texture_samplers,
+    SCDLinkSettings,
+    VIEW3D_PT_scd_link,
+    XV2_OT_scd_link_to_armature,
     IMPORT_OT_emd,
     EXPORT_OT_emd,
 ]
 
 
-def register():
-    for cls in classes:
+def _register_class(cls):
+    try:
+        bpy.utils.register_class(cls)
+    except ValueError:
+        # If already registered (e.g., after a reload), unregister and try again.
+        with contextlib.suppress(Exception):
+            bpy.utils.unregister_class(cls)
         bpy.utils.register_class(cls)
 
+
+def _unregister_class(cls):
+    with contextlib.suppress(Exception):
+        bpy.utils.unregister_class(cls)
+
+
+def register():
+    for cls in classes:
+        _register_class(cls)
+
+    bpy.types.Scene.xv2_scd_link = bpy.props.PointerProperty(type=SCDLinkSettings)
     bpy.types.Object.emd_texture_samplers = CollectionProperty(type=EMDTextureSamplerPropertyGroup)
     bpy.types.Object.emd_texture_samplers_index = IntProperty(default=0)
     bpy.types.Material.emd_texture_samplers = CollectionProperty(
@@ -218,13 +243,14 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(menu_func)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
 
+    del bpy.types.Scene.xv2_scd_link
     del bpy.types.Object.emd_texture_samplers
     del bpy.types.Object.emd_texture_samplers_index
     del bpy.types.Material.emd_texture_samplers
     del bpy.types.Material.emd_texture_samplers_index
 
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        _unregister_class(cls)
 
 
 if __name__ == "__main__":

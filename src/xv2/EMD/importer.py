@@ -103,6 +103,8 @@ def bind_weights(
 
     modifier = obj.modifiers.new(name="Armature", type="ARMATURE")
     modifier.object = arm_obj
+    modifier.show_in_editmode = True
+    modifier.show_on_cage = True
 
 
 def bind_weights_built(
@@ -161,6 +163,8 @@ def bind_weights_built(
 
     modifier = obj.modifiers.new(name="Armature", type="ARMATURE")
     modifier.object = arm_obj
+    modifier.show_in_editmode = True
+    modifier.show_on_cage = True
 
 
 def create_material(submesh_name: str) -> bpy.types.Material:
@@ -195,20 +199,23 @@ def import_emd(
 
     char_code = parts[0] if parts else stem
 
+    stem_esk = os.path.join(folder, f"{stem}.esk")
     preferred_esk = os.path.join(folder, f"{char_code}_000.esk")
-    alt_esk1 = os.path.join(folder, f"{char_code}.esk")
+    alt_esk = os.path.join(folder, f"{char_code}.esk")
 
     esk_path = ""
-    if os.path.exists(preferred_esk):
-        esk_path = preferred_esk
-    elif os.path.exists(alt_esk1):
-        esk_path = alt_esk1
+    esk_candidates = [stem_esk, preferred_esk, alt_esk]
 
     esk: ESK_File | None = None
     arm_obj = shared_armature
 
     if esk_override and os.path.exists(esk_override):
         esk_path = esk_override
+    else:
+        for candidate in esk_candidates:
+            if candidate and os.path.exists(candidate):
+                esk_path = candidate
+                break
 
     if os.path.exists(esk_path):
         try:

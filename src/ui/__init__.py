@@ -12,6 +12,12 @@ from .samplers import (
     sampler_defs_to_collection,
     sync_sampler_data,
 )
+from .scd import (
+    SCDLinkSettings,
+    VIEW3D_PT_scd_link,
+    XV2_OT_scd_link_to_armature,
+    link_scd_armatures,
+)
 
 __all__ = [
     "EMDTextureSamplerPropertyGroup",
@@ -26,4 +32,8 @@ __all__ = [
     "EMD_OT_texture_sampler_sync_props",
     "VIEW3D_PT_emd_texture_samplers",
     "PROPERTIES_PT_emd_texture_samplers",
+    "SCDLinkSettings",
+    "VIEW3D_PT_scd_link",
+    "XV2_OT_scd_link_to_armature",
+    "link_scd_armatures",
 ]
