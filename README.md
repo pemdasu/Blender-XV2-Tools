@@ -6,10 +6,10 @@ Blender add-on for importing and exporting Dragon Ball Xenoverse 2 assets. Built
 
 | Format | Import | Export | Notes |
 | --- | --- | --- | --- |
-| EMD | ✅ | ✅ | scds not fully supported as of right now |
+| EMD | ✅ | ✅ ||
 | DYT.EMB | ✅ | ❌ ||
 | EMB | ✅ | ❌ ||
-| ESK | ✅ | ⏳ | scds not fully supported as of right now |
+| ESK | ✅ | ⏳ ||
 | BCS | ⏳ | ❌ ||
 | EMM | ⏳ | ⏳ ||
 | CAM.EAN | ⏳ | ⏳ ||
