@@ -63,7 +63,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
     )
     merge_by_distance: BoolProperty(  # type: ignore
         name="Auto merge by distance",
-        default=False,
+        default=True,
     )
     merge_distance: FloatProperty(  # type: ignore
         name="Merge Distance",
