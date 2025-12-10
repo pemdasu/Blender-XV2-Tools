@@ -229,7 +229,7 @@ class PROPERTIES_PT_emd_texture_samplers(bpy.types.Panel):
     bl_context = "material"
 
     @classmethod
-    def poll(cls, context):  # noqa: D401
+    def poll(cls, context):
         mat = context.material or (context.object.active_material if context.object else None)
         return mat is not None
 

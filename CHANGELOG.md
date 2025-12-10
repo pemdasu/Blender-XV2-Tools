@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3
+
+- Added support for importing and exporting CAM.EAN and EAN files
+
 ## 1.0.2
 
 - Added support for importing SCDs with proper bone linking

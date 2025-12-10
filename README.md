@@ -10,10 +10,14 @@ Blender add-on for importing and exporting Dragon Ball Xenoverse 2 assets. Built
 | DYT.EMB | ✅ | ❌ ||
 | EMB | ✅ | ❌ ||
 | ESK | ✅ | ⏳ ||
+| EAN | ✅ | ✅ ||
+| CAM.EAN | ✅ | ✅ ||
 | BCS | ⏳ | ❌ ||
 | EMM | ⏳ | ⏳ ||
-| CAM.EAN | ⏳ | ⏳ ||
-| EAN | ⏳ | ⏳ ||
+| EMO | ⏳ | ⏳ ||
+| EMA | ⏳ | ⏳ | probably not mat.ema files only obj.ema |
+| NSK | ⏳ | ⏳ ||
+| MAP | ⏳ | ❌ ||
 
 ✅ supported • ❌ not supported/not planned yet • ⏳ planned
 

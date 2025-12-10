@@ -14,6 +14,8 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from .ui import (
+    CameraEANProperties,
+    DATA_PT_xv2_camera_actions,
     EMD_OT_texture_sampler_add,
     EMD_OT_texture_sampler_remove,
     EMD_OT_texture_sampler_sync_props,
@@ -23,9 +25,12 @@ from .ui import (
     SCDLinkSettings,
     VIEW3D_PT_emd_texture_samplers,
     VIEW3D_PT_scd_link,
+    XV2_OT_cam_link_bone,
     XV2_OT_scd_link_to_armature,
     link_scd_armatures,
 )
+from .xv2.EAN.exporter import export_cam_ean, export_ean
+from .xv2.EAN.importer import import_cam_ean, import_ean_animations
 from .xv2.EMD.exporter import export_selected
 from .xv2.EMD.importer import import_emd
 
@@ -142,6 +147,26 @@ class IMPORT_OT_emd(Operator, ImportHelper):
 
 
 # ---------------------------------------------------------------------------
+# Camera EAN Import (CAM.EAN)
+# ---------------------------------------------------------------------------
+class IMPORT_OT_cam_ean(Operator, ImportHelper):
+    bl_idname = "import_scene.xv2_cam_ean"
+    bl_label = "Import Camera EAN (Xenoverse 2)"
+
+    filename_ext = ".cam.ean"
+    filter_glob: StringProperty(default="*.cam.ean", options={"HIDDEN"})  # type: ignore
+
+    def execute(self, context):
+        created = import_cam_ean(self.filepath)
+        if created:
+            self.report({"INFO"}, "Imported camera EAN")
+            return {"FINISHED"}
+
+        self.report({"WARNING"}, "Not a camera EAN or nothing was created.")
+        return {"CANCELLED"}
+
+
+# ---------------------------------------------------------------------------
 # Export operator
 # ---------------------------------------------------------------------------
 class EXPORT_OT_emd(Operator, ExportHelper):
@@ -165,7 +190,7 @@ class EXPORT_OT_emd(Operator, ExportHelper):
             self.report(
                 {"WARNING"},
                 (
-                    "No meshes were exported (ensure meshes are selected and "
+                    "No meshes were exported (make sure meshes are selected and "
                     "parented to an armature)."
                 ),
             )
@@ -183,6 +208,14 @@ def menu_func(self, context):
         IMPORT_OT_emd.bl_idname,
         text="Dragon Ball XV2 EMD (.emd)",
     )
+    self.layout.operator(
+        IMPORT_OT_ean.bl_idname,
+        text="Dragon Ball XV2 EAN (.ean)",
+    )
+    self.layout.operator(
+        IMPORT_OT_cam_ean.bl_idname,
+        text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+    )
 
 
 def menu_func_export(self, context):
@@ -190,6 +223,77 @@ def menu_func_export(self, context):
         EXPORT_OT_emd.bl_idname,
         text="Dragon Ball XV2 EMD (.emd)",
     )
+    self.layout.operator(
+        EXPORT_OT_ean.bl_idname,
+        text="Dragon Ball XV2 EAN (.ean)",
+    )
+    self.layout.operator(
+        EXPORT_OT_cam_ean.bl_idname,
+        text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+    )
+
+
+class IMPORT_OT_ean(Operator, ImportHelper):
+    bl_idname = "import_scene.xv2_ean"
+    bl_label = "Import EAN (Xenoverse 2)"
+
+    filename_ext = ".ean"
+    filter_glob: StringProperty(default="*.ean", options={"HIDDEN"})  # type: ignore
+    replace_armature: BoolProperty(  # type: ignore
+        name="Replace selected armature",
+        description="Ignore the selected armature and build one from the EAN skeleton",
+        default=False,
+    )
+
+    def execute(self, context):
+        target = context.object if context.object and context.object.type == "ARMATURE" else None
+        arm = import_ean_animations(
+            self.filepath,
+            target_armature=target,
+            replace_armature=self.replace_armature,
+        )
+        if arm:
+            self.report({"INFO"}, f"Imported EAN onto armature {arm.name}")
+            return {"FINISHED"}
+        self.report({"WARNING"}, "Nothing imported.")
+        return {"CANCELLED"}
+
+
+class EXPORT_OT_cam_ean(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_cam_ean"
+    bl_label = "Export Camera EAN (Xenoverse 2)"
+
+    filename_ext = ".cam.ean"
+    filter_glob: StringProperty(default="*.cam.ean", options={"HIDDEN"})  # type: ignore
+
+    def execute(self, context):
+        rig = context.object
+        ok = export_cam_ean(self.filepath, rig_obj=rig)
+        if ok:
+            self.report({"INFO"}, "Exported Camera EAN")
+            return {"FINISHED"}
+        self.report({"ERROR"}, "Failed to export Camera EAN (select a camera rig).")
+        return {"CANCELLED"}
+
+
+class EXPORT_OT_ean(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_ean"
+    bl_label = "Export EAN (Xenoverse 2)"
+
+    filename_ext = ".ean"
+    filter_glob: StringProperty(default="*.ean", options={"HIDDEN"})  # type: ignore
+
+    def execute(self, context):
+        arm = context.object if context.object and context.object.type == "ARMATURE" else None
+        if arm is None:
+            self.report({"ERROR"}, "Select an armature to export.")
+            return {"CANCELLED"}
+        ok = export_ean(self.filepath, arm)
+        if ok:
+            self.report({"INFO"}, "Exported EAN")
+            return {"FINISHED"}
+        self.report({"ERROR"}, "Failed to export EAN.")
+        return {"CANCELLED"}
 
 
 classes = [
@@ -204,7 +308,14 @@ classes = [
     VIEW3D_PT_scd_link,
     XV2_OT_scd_link_to_armature,
     IMPORT_OT_emd,
+    IMPORT_OT_cam_ean,
+    IMPORT_OT_ean,
     EXPORT_OT_emd,
+    EXPORT_OT_ean,
+    EXPORT_OT_cam_ean,
+    CameraEANProperties,
+    DATA_PT_xv2_camera_actions,
+    XV2_OT_cam_link_bone,
 ]
 
 
@@ -234,6 +345,9 @@ def register():
         type=EMDTextureSamplerPropertyGroup
     )
     bpy.types.Material.emd_texture_samplers_index = IntProperty(default=0)
+    bpy.types.Scene.xv2_cam_props = bpy.props.PointerProperty(type=CameraEANProperties)
+    bpy.types.Camera.xv2_fov = bpy.props.FloatProperty(name="XV2 FOV (deg)", default=40.0)
+    bpy.types.Camera.xv2_roll = bpy.props.FloatProperty(name="XV2 Roll (deg)", default=0.0)
 
     bpy.types.TOPBAR_MT_file_import.append(menu_func)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
@@ -248,6 +362,9 @@ def unregister():
     del bpy.types.Object.emd_texture_samplers_index
     del bpy.types.Material.emd_texture_samplers
     del bpy.types.Material.emd_texture_samplers_index
+    del bpy.types.Scene.xv2_cam_props
+    del bpy.types.Camera.xv2_fov
+    del bpy.types.Camera.xv2_roll
 
     for cls in reversed(classes):
         _unregister_class(cls)

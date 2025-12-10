@@ -1,3 +1,9 @@
+from .camera_props import (
+    CameraEANProperties,
+    CameraFOVRollProperties,
+    DATA_PT_xv2_camera_actions,
+    XV2_OT_cam_link_bone,
+)
 from .samplers import (
     EMD_OT_texture_sampler_add,
     EMD_OT_texture_sampler_remove,
@@ -36,4 +42,8 @@ __all__ = [
     "VIEW3D_PT_scd_link",
     "XV2_OT_scd_link_to_armature",
     "link_scd_armatures",
+    "CameraEANProperties",
+    "CameraFOVRollProperties",
+    "DATA_PT_xv2_camera_actions",
+    "XV2_OT_cam_link_bone",
 ]
