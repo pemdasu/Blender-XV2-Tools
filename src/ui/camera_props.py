@@ -1,7 +1,6 @@
-import contextlib
-
 import bpy
 from bpy.props import EnumProperty, FloatProperty, StringProperty
+from mathutils import Matrix
 
 
 def _find_camera_object(context):
@@ -143,28 +142,8 @@ class XV2_OT_cam_link_bone(bpy.types.Operator):
         constraint.name = "XV2_BoneLink"
         constraint.target = arm_obj
         constraint.subtarget = bone_name
+        constraint.inverse_matrix = Matrix.Identity(4)
 
-        if constraint.target:
-            ctx = {
-                "constraint": constraint,
-                "object": rig,
-                "active_object": rig,
-                "selected_objects": [rig],
-                "selected_editable_objects": [rig],
-            }
-            with contextlib.suppress(Exception):
-                bpy.ops.constraint.childof_clear_inverse(
-                    ctx, constraint=constraint.name, owner="OBJECT"
-                )
-            with contextlib.suppress(Exception):
-                bpy.ops.constraint.childof_set_inverse(
-                    ctx, constraint=constraint.name, owner="OBJECT"
-                )
-
-            target_mat = (
-                constraint.target.matrix_world @ constraint.target.pose.bones[bone_name].matrix
-            )
-            constraint.inverse_matrix = target_mat.inverted() @ rig.matrix_world
         for attr in (
             "use_rotation_x",
             "use_rotation_y",
