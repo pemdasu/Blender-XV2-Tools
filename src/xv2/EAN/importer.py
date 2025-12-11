@@ -360,7 +360,26 @@ def import_ean_animations(
                 if hasattr(constraint, "target") and getattr(constraint, "target", None) is old_arm:
                     constraint.target = new_arm
 
+    def _find_scd_sources(target_obj: bpy.types.Object) -> list[bpy.types.Object]:
+        sources: list[bpy.types.Object] = []
+        seen: set[str] = set()
+        for obj in bpy.data.objects:
+            if obj.type != "ARMATURE":
+                continue
+            for pbone in obj.pose.bones:
+                for constraint in pbone.constraints:
+                    if getattr(constraint, "target", None) is target_obj:
+                        if obj.name not in seen:
+                            sources.append(obj)
+                            seen.add(obj.name)
+                        break
+                else:
+                    continue
+                break
+        return sources
+
     old_arm = target_armature if replace_armature else None
+    ean_arm_name = ean.skeleton.bones[0].name if ean.skeleton and ean.skeleton.bones else "Armature"
 
     (
         arm_obj,
@@ -379,20 +398,22 @@ def import_ean_animations(
         return None
 
     if replace_armature and old_arm and arm_obj is not None:
+        scd_sources = _find_scd_sources(old_arm)
         arm_data = old_arm.data
-        arm_obj.name = old_arm.name
+        # Preserve the EAN armature naming instead of the previous armature name.
+        arm_obj.name = ean_arm_name
         if arm_obj.data:
-            arm_obj.data.name = arm_obj.data.name or arm_obj.name
+            arm_obj.data.name = ean_arm_name
         _relink_armature(old_arm, arm_obj)
-        with contextlib.suppress(Exception):
-            link_scd_armatures(old_arm, arm_obj)
+        for scd_arm in scd_sources:
+            with contextlib.suppress(Exception):
+                # Relink any SCD armatures that were targeting the old armature to the new one.
+                link_scd_armatures(scd_arm, arm_obj)
         with contextlib.suppress(Exception):
             bpy.data.objects.remove(old_arm, do_unlink=True)
         if arm_data and arm_data.users == 0:
             with contextlib.suppress(Exception):
                 bpy.data.armatures.remove(arm_data, do_unlink=True)
-
-    ean_arm_name = ean.skeleton.bones[0].name if ean.skeleton and ean.skeleton.bones else "Armature"
 
     for anim in sorted(ean.animations, key=lambda a: a.index):
         anim_base = anim.name or f"Anim_{anim.index}"
