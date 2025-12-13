@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.4
+
+- Fixed CAM.EAN roll being inverted
+- Fixed CAM.EAN export EAN index not being preserved
+- Improved Camera control UI panel
+- Added create/rename action option **Note:** When creating a new action, make sure to do it through this to make sure the FOV/Roll are stored properly
+
 ## 1.0.3
 
 - Added support for importing and exporting CAM.EAN and EAN files

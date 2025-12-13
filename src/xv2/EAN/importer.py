@@ -197,6 +197,11 @@ def _apply_camera_keyframes(camera: bpy.types.Object, anim: EANAnimation, action
     data_action_name = f"{action_name}_data"
     _prep_action_data(camera.data, data_action_name)
 
+    if camera.animation_data and camera.animation_data.action:
+        camera.animation_data.action["ean_index"] = anim.index
+    if camera.data and camera.data.animation_data and camera.data.animation_data.action:
+        camera.data.animation_data.action["ean_index"] = anim.index
+
     pos_comp = _get_component(node, ComponentType.Position)
     scale_comp = _get_component(node, ComponentType.Scale)
 
@@ -209,7 +214,7 @@ def _apply_camera_keyframes(camera: bpy.types.Object, anim: EANAnimation, action
 
     if scale_comp:
         for keyframe in scale_comp.keyframes:
-            roll_deg = math.degrees(keyframe.x)
+            roll_deg = -math.degrees(keyframe.x)
             fov_deg = math.degrees(keyframe.y)
             if hasattr(camera.data, "xv2_roll") and hasattr(camera.data, "xv2_fov"):
                 camera.data.xv2_roll = roll_deg
@@ -232,6 +237,9 @@ def _apply_target_keyframes(target: bpy.types.Object, anim: EANAnimation, action
     _prep_action(target, action_name)
     target.rotation_mode = "XYZ"
 
+    if target.animation_data and target.animation_data.action:
+        target.animation_data.action["ean_index"] = anim.index
+
     comp = _get_component(node, ComponentType.Rotation) or _get_component(
         node, ComponentType.Position
     )
@@ -253,13 +261,13 @@ def import_cam_ean(path: str) -> list[bpy.types.Object]:
 
     rig = bpy.data.objects.new("CameraRig", None)
     rig.empty_display_type = "PLAIN_AXES"
-    rig.empty_display_size = 0.25
+    rig.empty_display_size = 0.01
     rig["ean_source"] = os.path.abspath(path)
     bpy.context.collection.objects.link(rig)
     created.append(rig)
 
     target = bpy.data.objects.new(target_name, None)
-    target.empty_display_type = "SPHERE"
+    target.empty_display_type = "PLAIN_AXES"
     target.empty_display_size = 0.25
     target["ean_source"] = os.path.abspath(path)
     bpy.context.collection.objects.link(target)

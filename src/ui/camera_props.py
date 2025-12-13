@@ -70,6 +70,15 @@ def _apply_selected_animation(self, context):
                 break
 
 
+def _current_base_from_actions(context) -> str | None:
+    cam_obj = _find_camera_object(context)
+    if cam_obj and cam_obj.animation_data and cam_obj.animation_data.action:
+        name = cam_obj.animation_data.action.name
+        if name.startswith("Node_") and not name.endswith("_data"):
+            return name[len("Node_") :]
+    return None
+
+
 def _update_fov_roll(self, context):
     return
 
@@ -169,6 +178,16 @@ class CameraEANProperties(bpy.types.PropertyGroup):
         items=_ean_anim_items,
         update=_apply_selected_animation,
     )  # type: ignore
+    xv2_cam_new_name: StringProperty(
+        name="New Action Name",
+        description="Base name for new Node/Target camera actions",
+        default="NewCam",
+    )  # type: ignore
+    xv2_cam_rename_name: StringProperty(
+        name="Rename Action",
+        description="New base name for the currently assigned Node/Target actions",
+        default="",
+    )  # type: ignore
     xv2_cam_status: StringProperty(name="Status", default="")  # type: ignore
     link_armature: bpy.props.PointerProperty(  # type: ignore
         name="Armature",
@@ -180,6 +199,121 @@ class CameraEANProperties(bpy.types.PropertyGroup):
         description="Bone to link the camera rig to",
         items=_bone_items,
     )
+
+
+class XV2_OT_cam_create_actions(bpy.types.Operator):
+    bl_idname = "xv2_cam.create_actions"
+    bl_label = "Create new action"
+    bl_description = "Create Node/Target/FOV actions and assign to camera and target"
+
+    def execute(self, context):
+        cam_obj = _find_camera_object(context)
+        if cam_obj is None:
+            self.report({"ERROR"}, "No camera selected")
+            return {"CANCELLED"}
+
+        base = context.scene.xv2_cam_props.xv2_cam_new_name.strip() or "NewCam"
+        node_name = f"Node_{base}"
+        data_name = f"{node_name}_data"
+        target_name = f"Target_{base}"
+
+        target_obj = None
+        for obj in context.collection.objects:
+            if obj.type == "EMPTY" and obj.name.lower().startswith("cameratarget"):
+                target_obj = obj
+                break
+        if target_obj is None:
+            self.report({"ERROR"}, "CameraTarget not found in this collection")
+            return {"CANCELLED"}
+
+        node_action = bpy.data.actions.get(node_name) or bpy.data.actions.new(node_name)
+        node_action.use_fake_user = True
+        data_action = bpy.data.actions.get(data_name) or bpy.data.actions.new(data_name)
+        data_action.use_fake_user = True
+        target_action = bpy.data.actions.get(target_name) or bpy.data.actions.new(target_name)
+        target_action.use_fake_user = True
+
+        cam_obj.animation_data_create()
+        cam_obj.animation_data.action = node_action
+        cam_obj.data.animation_data_create()
+        cam_obj.data.animation_data.action = data_action
+        target_obj.animation_data_create()
+        target_obj.animation_data.action = target_action
+
+        # Make sure FOV/Roll curves exist on data action for the current frame
+        frame = context.scene.frame_current
+        for prop_name in ("xv2_fov", "xv2_roll"):
+            try:
+                value = getattr(cam_obj.data, prop_name)
+            except Exception:
+                continue
+            fc = data_action.fcurves.find(prop_name)
+            if fc is None:
+                fc = data_action.fcurves.new(prop_name)
+            fc.keyframe_points.insert(frame, value, options={"REPLACE"})
+
+        # Update selection
+        context.scene.xv2_cam_props.xv2_cam_anim = base
+        self.report({"INFO"}, f"Assigned actions {node_name}, {target_name}")
+        return {"FINISHED"}
+
+
+class XV2_OT_cam_rename_actions(bpy.types.Operator):
+    bl_idname = "xv2_cam.rename_actions"
+    bl_label = "Rename action"
+    bl_description = "Rename currently assigned Node/Target/Data actions to a new base name"
+
+    def execute(self, context):
+        cam_obj = _find_camera_object(context)
+        if cam_obj is None:
+            self.report({"ERROR"}, "No camera selected")
+            return {"CANCELLED"}
+
+        current_base = (
+            _current_base_from_actions(context) or context.scene.xv2_cam_props.xv2_cam_anim
+        )
+        if not current_base or current_base == "NONE":
+            self.report({"ERROR"}, "No active camera action to rename")
+            return {"CANCELLED"}
+
+        new_base = context.scene.xv2_cam_props.xv2_cam_rename_name.strip()
+        if not new_base:
+            self.report({"ERROR"}, "Provide a new name")
+            return {"CANCELLED"}
+
+        node_old = f"Node_{current_base}"
+        data_old = f"{node_old}_data"
+        target_old = f"Target_{current_base}"
+        node_new = f"Node_{new_base}"
+        data_new = f"{node_new}_data"
+        target_new = f"Target_{new_base}"
+
+        # Rename actions if they exist
+        for old, new in ((node_old, node_new), (data_old, data_new), (target_old, target_new)):
+            act = bpy.data.actions.get(old)
+            if act:
+                act.name = new
+                act.use_fake_user = True
+
+        # Update assignments
+        cam_obj.animation_data_create()
+        cam_obj.animation_data.action = bpy.data.actions.get(node_new)
+        if cam_obj.data:
+            cam_obj.data.animation_data_create()
+            cam_obj.data.animation_data.action = bpy.data.actions.get(data_new)
+
+        target_obj = None
+        for obj in context.collection.objects:
+            if obj.type == "EMPTY" and obj.name.lower().startswith("cameratarget"):
+                target_obj = obj
+                break
+        if target_obj:
+            target_obj.animation_data_create()
+            target_obj.animation_data.action = bpy.data.actions.get(target_new)
+
+        context.scene.xv2_cam_props.xv2_cam_anim = new_base
+        self.report({"INFO"}, f"Renamed actions to base '{new_base}'")
+        return {"FINISHED"}
 
 
 class CameraFOVRollProperties(bpy.types.PropertyGroup):
@@ -211,22 +345,38 @@ class DATA_PT_xv2_camera_actions(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.xv2_cam_props
-        layout.prop(props, "xv2_cam_anim", text="Animation")
-        if props.xv2_cam_anim == "NONE":
-            layout.label(text="No EAN actions found.", icon="INFO")
-        else:
-            layout.label(text="Sets actions on Node/Target (if found).")
+        current_base = _current_base_from_actions(context)
+        if current_base and props.xv2_cam_anim != current_base:
+            box = layout.box()
+            box.label(text=f"Active node action: {current_base}", icon="INFO")
 
-        layout.separator()
+        box_anim = layout.box()
+        box_anim.label(text="Animations", icon="ACTION")
+        box_anim.prop(props, "xv2_cam_anim", text="Select")
+        if props.xv2_cam_anim == "NONE":
+            box_anim.label(text="No EAN actions found.", icon="INFO")
+        else:
+            box_anim.label(text="Sets actions on Node/Target (if found).")
+
+        box_create = layout.box()
+        box_create.label(text="Create / Rename", icon="FILE_NEW")
         cam_obj = _find_camera_object(context)
         if cam_obj:
-            layout.prop(cam_obj.data, "xv2_fov", text="FOV (deg)")
-            layout.prop(cam_obj.data, "xv2_roll", text="Roll (deg)")
-            layout.separator()
-            layout.label(text="Bone Link:")
-            layout.prop(props, "link_armature", text="Armature")
-            layout.prop(props, "link_bone", text="Bone")
-            layout.operator("xv2_cam.link_bone", icon="CONSTRAINT")
+            fov_box = layout.box()
+            fov_box.label(text="Lens", icon="CAMERA_DATA")
+            fov_box.prop(cam_obj.data, "xv2_fov", text="FOV (deg)")
+            fov_box.prop(cam_obj.data, "xv2_roll", text="Roll (deg)")
+
+            box_create.prop(props, "xv2_cam_new_name", text="New action base")
+            box_create.operator("xv2_cam.create_actions", icon="ADD")
+            box_create.prop(props, "xv2_cam_rename_name", text="Rename action")
+            box_create.operator("xv2_cam.rename_actions", icon="GREASEPENCIL")
+
+            box_link = layout.box()
+            box_link.label(text="Bone Link", icon="CONSTRAINT")
+            box_link.prop(props, "link_armature", text="Armature")
+            box_link.prop(props, "link_bone", text="Bone")
+            box_link.operator("xv2_cam.link_bone", icon="CONSTRAINT")
         else:
             layout.label(text="Select a camera object.", icon="INFO")
 
@@ -235,6 +385,8 @@ classes = [
     CameraEANProperties,
     CameraFOVRollProperties,
     DATA_PT_xv2_camera_actions,
+    XV2_OT_cam_create_actions,
+    XV2_OT_cam_rename_actions,
     XV2_OT_cam_link_bone,
 ]
 
@@ -243,6 +395,8 @@ __all__ = [
     "CameraEANProperties",
     "CameraFOVRollProperties",
     "DATA_PT_xv2_camera_actions",
+    "XV2_OT_cam_create_actions",
+    "XV2_OT_cam_rename_actions",
     "XV2_OT_cam_link_bone",
     "classes",
 ]

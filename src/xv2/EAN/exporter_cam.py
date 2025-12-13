@@ -222,12 +222,27 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
                 target_obj = constraint.target
                 break
 
-    base_names = []
+    base_entries: list[tuple[int | None, str]] = []
     for action in bpy.data.actions:
         name = action.name
         if name.startswith("Node_") and not name.endswith("_data"):
-            base_names.append(name[len("Node_") :])
-    base_names = sorted(set(base_names))
+            base = name[len("Node_") :]
+            idx_val = action.get("ean_index")
+            idx_int = idx_val if isinstance(idx_val, int) else None
+            base_entries.append((idx_int, base))
+    # Deduplicate by base name, preferring the first occurrence (which keeps index if present).
+    seen = set()
+    deduped: list[tuple[int | None, str]] = []
+    for entry in base_entries:
+        if entry[1] in seen:
+            continue
+        seen.add(entry[1])
+        deduped.append(entry)
+    # Sort by explicit index if available; fall back to name.
+    base_entries_sorted = sorted(
+        deduped, key=lambda e: (e[0] is None, e[0] if e[0] is not None else e[1])
+    )
+    base_names = [entry[1] for entry in base_entries_sorted]
     if not base_names:
         return False
 
@@ -271,7 +286,7 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
         scale_keyframes = _build_keyframes_from_frames(
             frames,
             lambda f: (
-                math.radians(
+                -math.radians(
                     _eval_scalar(data_action, "xv2_roll", f, getattr(cam_obj.data, "xv2_roll", 0.0))
                 ),
                 math.radians(

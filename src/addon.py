@@ -25,7 +25,9 @@ from .ui import (
     SCDLinkSettings,
     VIEW3D_PT_emd_texture_samplers,
     VIEW3D_PT_scd_link,
+    XV2_OT_cam_create_actions,
     XV2_OT_cam_link_bone,
+    XV2_OT_cam_rename_actions,
     XV2_OT_scd_link_to_armature,
     link_scd_armatures,
 )
@@ -315,7 +317,9 @@ classes = [
     EXPORT_OT_cam_ean,
     CameraEANProperties,
     DATA_PT_xv2_camera_actions,
+    XV2_OT_cam_create_actions,
     XV2_OT_cam_link_bone,
+    XV2_OT_cam_rename_actions,
 ]
 
 

@@ -2,6 +2,8 @@
 
 Blender add-on for importing and exporting Dragon Ball Xenoverse 2 assets. Built and tested with **Blender 4.0.2**; other versions may work but are not officially supported.
 
+Huge thanks to [Lazybone](https://github.com/LazyBone152) for their [Xv2CoreLib](https://github.com/LazyBone152/XV2-Tools) without their efforts, this project wouldn't have been possible
+
 ## Features & Status
 
 | Format | Import | Export | Notes |
@@ -13,7 +15,7 @@ Blender add-on for importing and exporting Dragon Ball Xenoverse 2 assets. Built
 | EAN | ✅ | ✅ ||
 | CAM.EAN | ✅ | ✅ ||
 | BCS | ⏳ | ❌ ||
-| EMM | ⏳ | ⏳ ||
+| EMM | ⏳ | ❌ ||
 | EMO | ⏳ | ⏳ ||
 | EMA | ⏳ | ⏳ | probably not mat.ema files only obj.ema |
 | NSK | ⏳ | ⏳ ||

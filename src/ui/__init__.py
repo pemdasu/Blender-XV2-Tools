@@ -2,7 +2,9 @@ from .camera_props import (
     CameraEANProperties,
     CameraFOVRollProperties,
     DATA_PT_xv2_camera_actions,
+    XV2_OT_cam_create_actions,
     XV2_OT_cam_link_bone,
+    XV2_OT_cam_rename_actions,
 )
 from .samplers import (
     EMD_OT_texture_sampler_add,
@@ -45,5 +47,7 @@ __all__ = [
     "CameraEANProperties",
     "CameraFOVRollProperties",
     "DATA_PT_xv2_camera_actions",
+    "XV2_OT_cam_create_actions",
     "XV2_OT_cam_link_bone",
+    "XV2_OT_cam_rename_actions",
 ]
