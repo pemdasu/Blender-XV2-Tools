@@ -4,6 +4,8 @@ Blender add-on for importing and exporting Dragon Ball Xenoverse 2 assets. Built
 
 Huge thanks to [Lazybone](https://github.com/LazyBone152) for their [Xv2CoreLib](https://github.com/LazyBone152/XV2-Tools) without their efforts, this project wouldn't have been possible
 
+More thanks to ChaosBeat and AreCreeps for creating the basic shader used in this tool
+
 ## Features & Status
 
 | Format | Import | Export | Notes |
@@ -47,10 +49,11 @@ python build_addon.py
 
 ## Known Issues / Notes
 
-- Blender 4.0.2 is the target version; older/newer builds may work but aren’t guaranteed.
-- If hard edges look off after export, re-verify split normals/sharp edges before exporting.
+- Blender 4.0.2 is the target version; older/newer builds may work but aren’t guaranteed
+- If hard edges look off after export, re-verify split normals/sharp edges before exporting
 - Export EMD sometimes doesn't detect you have the meshes selected
 - Export EMD asks you for a filename despite always taking whatever the mesh name is
+- Some shaders that the game uses aren't supported and don't display properly in Blender
 
 ## Contributing
 

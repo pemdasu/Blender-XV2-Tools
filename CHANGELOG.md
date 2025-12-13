@@ -6,6 +6,8 @@
 - Fixed CAM.EAN export EAN index not being preserved
 - Improved Camera control UI panel
 - Added create/rename action option **Note:** When creating a new action, make sure to do it through this to make sure the FOV/Roll are stored properly
+- Added auto basic shader assignment
+- Fixed EMB parser not being able to read some newer EMB files
 
 ## 1.0.3
 
