@@ -170,7 +170,7 @@ class EMD_OT_texture_sampler_remove(bpy.types.Operator):
 
 
 class VIEW3D_PT_emd_texture_samplers(bpy.types.Panel):
-    bl_label = "EMD Texture Samplers"
+    bl_label = "Xenoverse 2 EMD"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "EMD"
@@ -187,12 +187,13 @@ class VIEW3D_PT_emd_texture_samplers(bpy.types.Panel):
         if container is None:
             layout.label(text="No sampler data available.")
             return
-
         is_material = isinstance(container, bpy.types.Material)
         header = "Material" if is_material else "Object"
-        layout.label(text=f"Editing {header} samplers")
 
-        row = layout.row()
+        box_sampler = layout.box()
+        box_sampler.label(text=f"{header} Texture Samplers", icon="TEXTURE")
+
+        row = box_sampler.row()
         row.template_list(
             "EMD_UL_texture_samplers",
             "",
@@ -211,19 +212,36 @@ class VIEW3D_PT_emd_texture_samplers(bpy.types.Panel):
             active_idx = container.emd_texture_samplers_index
             if 0 <= active_idx < len(container.emd_texture_samplers):
                 sampler = container.emd_texture_samplers[active_idx]
-                box = layout.box()
-                box.prop(sampler, "texture_index")
-                box.prop(sampler, "flag0")
-                box.prop(sampler, "address_mode_u")
-                box.prop(sampler, "address_mode_v")
-                box.prop(sampler, "filtering_min")
-                box.prop(sampler, "filtering_mag")
-                box.prop(sampler, "scale_u")
-                box.prop(sampler, "scale_v")
+                inner = box_sampler.box()
+                inner.prop(sampler, "texture_index")
+                inner.prop(sampler, "flag0")
+                inner.prop(sampler, "address_mode_u")
+                inner.prop(sampler, "address_mode_v")
+                inner.prop(sampler, "filtering_min")
+                inner.prop(sampler, "filtering_mag")
+                inner.prop(sampler, "scale_u")
+                inner.prop(sampler, "scale_v")
+
+        emm_box = layout.box()
+        emm_box.label(text="EMM Parameters", icon="SHADING_RENDERED")
+        if hasattr(container, "get"):
+            emm_box.prop(container, '["emm_name"]', text="Name")
+            emm_box.prop(container, '["emm_shader"]', text="Shader")
+            displayed = False
+            for key in sorted(container.keys()):
+                if not key.startswith("emm_param_"):
+                    continue
+                label = key.replace("emm_param_", "", 1)
+                emm_box.prop(container, f'["{key}"]', text=label)
+                displayed = True
+            if not displayed:
+                emm_box.label(text="No EMM data.", icon="INFO")
+        else:
+            emm_box.label(text="No EMM data.", icon="INFO")
 
 
 class PROPERTIES_PT_emd_texture_samplers(bpy.types.Panel):
-    bl_label = "EMD Texture Samplers"
+    bl_label = "Xenoverse 2 EMD"
     bl_space_type = "PROPERTIES"
     bl_region_type = "WINDOW"
     bl_context = "material"
@@ -243,8 +261,10 @@ class PROPERTIES_PT_emd_texture_samplers(bpy.types.Panel):
         if container is None:
             layout.label(text="No sampler data on material.")
             return
+        box_sampler = layout.box()
+        box_sampler.label(text="Material Texture Samplers", icon="TEXTURE")
 
-        row = layout.row()
+        row = box_sampler.row()
         row.template_list(
             "EMD_UL_texture_samplers",
             "",
@@ -263,15 +283,32 @@ class PROPERTIES_PT_emd_texture_samplers(bpy.types.Panel):
             active_idx = container.emd_texture_samplers_index
             if 0 <= active_idx < len(container.emd_texture_samplers):
                 sampler = container.emd_texture_samplers[active_idx]
-                box = layout.box()
-                box.prop(sampler, "texture_index")
-                box.prop(sampler, "flag0")
-                box.prop(sampler, "address_mode_u")
-                box.prop(sampler, "address_mode_v")
-                box.prop(sampler, "filtering_min")
-                box.prop(sampler, "filtering_mag")
-                box.prop(sampler, "scale_u")
-                box.prop(sampler, "scale_v")
+                inner = box_sampler.box()
+                inner.prop(sampler, "texture_index")
+                inner.prop(sampler, "flag0")
+                inner.prop(sampler, "address_mode_u")
+                inner.prop(sampler, "address_mode_v")
+                inner.prop(sampler, "filtering_min")
+                inner.prop(sampler, "filtering_mag")
+                inner.prop(sampler, "scale_u")
+                inner.prop(sampler, "scale_v")
+
+        emm_box = layout.box()
+        emm_box.label(text="EMM Parameters", icon="SHADING_RENDERED")
+        if hasattr(container, "get"):
+            emm_box.prop(container, '["emm_name"]', text="Name")
+            emm_box.prop(container, '["emm_shader"]', text="Shader")
+            displayed = False
+            for key in sorted(container.keys()):
+                if not key.startswith("emm_param_"):
+                    continue
+                label = key.replace("emm_param_", "", 1)
+                emm_box.prop(container, f'["{key}"]', text=label)
+                displayed = True
+            if not displayed:
+                emm_box.label(text="No EMM data.", icon="INFO")
+        else:
+            emm_box.label(text="No EMM data.", icon="INFO")
 
 
 class EMD_OT_texture_sampler_sync_props(bpy.types.Operator):

@@ -10,6 +10,44 @@ from ..EMD.EMD import (
     EMD_TextureSamplerDef,
 )
 
+DDSD_LINEARSIZE = 0x80000
+DDSD_CAPS = 0x1
+DDSD_HEIGHT = 0x2
+DDSD_WIDTH = 0x4
+DDSD_PIXELFORMAT = 0x1000
+
+
+def _set_colorspace(image: bpy.types.Image, name: str) -> None:
+    with contextlib.suppress(Exception):
+        cs = image.colorspace_settings
+        is_data = name in ("Non-Color", "Raw")
+        cs.is_data = is_data
+        for _ in range(3):
+            cs.name = name
+            if cs.name == name:
+                break
+            for alt in ("Linear", "Raw", "sRGB", "Non-Color"):
+                cs.name = alt
+        cs.is_data = is_data
+        image.update()
+        image.update_tag()
+
+
+def _force_image_colorspace(image: bpy.types.Image, name: str) -> bpy.types.Image:
+    _set_colorspace(image, name)
+    try:
+        if image.colorspace_settings.name == name:
+            return image
+    except Exception:
+        pass
+    # As a last resort, duplicate the image datablock and apply the colorspace on the copy.
+    with contextlib.suppress(Exception):
+        dup = image.copy()
+        dup.name = f"{image.name}_cs"
+        _set_colorspace(dup, name)
+        return dup
+    return image
+
 
 class EMBEntry:
     def __init__(self):
@@ -22,6 +60,11 @@ class EMBFile:
     def __init__(self):
         self.entries: list[EMBEntry] = []
         self.path = ""
+        # Extra header/meta fields (to match LB parser)
+        self.is_emz = False
+        self.i_08: int | None = None
+        self.i_10: int | None = None
+        self.use_file_names: bool | None = None
 
 
 EMB_SIGNATURE = 1112360227
@@ -40,41 +83,56 @@ def read_emb(path: str) -> EMBFile | None:
         return None
 
     with open(path, "rb") as f:
-        data = f.read()
+        raw = f.read()
 
-    if struct.unpack_from("<I", data, 0)[0] != EMB_SIGNATURE:
+    if len(raw) < 32:
         return None
+
+    sig_pos = raw.find(struct.pack("<I", EMB_SIGNATURE))
+    if sig_pos == -1 or sig_pos + 32 > len(raw):
+        return None
+
+    base = sig_pos
+    view = memoryview(raw)[base:]
 
     emb = EMBFile()
     emb.path = path
 
-    total_entries = struct.unpack_from("<I", data, 12)[0]
-    contents_offset = struct.unpack_from("<I", data, 24)[0]
-    file_name_table_offset = struct.unpack_from("<I", data, 28)[0]
+    # Header fields (to match LB parser)
+    emb.i_08 = struct.unpack_from("<H", view, 8)[0]
+    emb.i_10 = struct.unpack_from("<H", view, 10)[0]
+    total_entries = struct.unpack_from("<I", view, 12)[0]
+    contents_offset = struct.unpack_from("<I", view, 24)[0]
+    file_name_table_offset = struct.unpack_from("<I", view, 28)[0]
+    emb.use_file_names = file_name_table_offset != 0
 
     offsets: list[int] = []
     sizes: list[int] = []
     for i in range(total_entries):
         entry_offset = contents_offset + i * 8
-        data_offset = struct.unpack_from("<I", data, entry_offset)[0] + entry_offset
-        data_size = struct.unpack_from("<I", data, entry_offset + 4)[0]
+        if entry_offset + 8 > len(view):
+            break
+        rel_offset = struct.unpack_from("<I", view, entry_offset)[0]
+        data_offset = rel_offset + entry_offset
+        data_size = struct.unpack_from("<I", view, entry_offset + 4)[0]
         offsets.append(data_offset)
         sizes.append(data_size)
 
     name_offsets: list[int] = []
     if file_name_table_offset != 0:
         for i in range(total_entries):
-            name_offsets.append(struct.unpack_from("<I", data, file_name_table_offset + 4 * i)[0])
+            noff = file_name_table_offset + 4 * i
+            if noff + 4 <= len(view):
+                name_offsets.append(struct.unpack_from("<I", view, noff)[0])
 
-    for i in range(total_entries):
+    for i in range(len(offsets)):
         entry = EMBEntry()
         entry.index = i
-        entry.name = (
-            read_cstring(data, name_offsets[i])
-            if file_name_table_offset != 0 and i < len(name_offsets)
-            else f"DATA{i:03d}.dds"
-        )
-        entry.data = data[offsets[i] : offsets[i] + sizes[i]]
+        if file_name_table_offset != 0 and i < len(name_offsets):
+            entry.name = read_cstring(view, name_offsets[i])
+        else:
+            entry.name = f"DATA{i:03d}.dds"
+        entry.data = view[offsets[i] : offsets[i] + sizes[i]].tobytes()
         emb.entries.append(entry)
 
     return emb
@@ -86,11 +144,58 @@ def load_emb_image(
     name_prefix: str = "",
     base_override: str | None = None,
 ) -> bpy.types.Image | None:
+    if not entry.data:
+        return None
+
+    sig_index = entry.data.find(b"DDS ")
+    if sig_index == -1:
+        return None
+
+    dds_data = entry.data[sig_index:]
+
+    # DDS sanity checks and patching to keep Blender happy.
+    try:
+        header_size = struct.unpack_from("<I", dds_data, 4)[0]
+        if header_size != 124:
+            return None
+        fourcc = dds_data[84:88]
+        allowed = {b"DXT1", b"DXT3", b"DXT5", b"BC1 ", b"BC2 ", b"BC3 ", b"BC4 ", b"BC5 ", b"ATI2"}
+        if fourcc and fourcc not in allowed:
+            return None
+        flags = struct.unpack_from("<I", dds_data, 8)[0]
+        height = struct.unpack_from("<I", dds_data, 12)[0]
+        width = struct.unpack_from("<I", dds_data, 16)[0]
+        is_bc1 = fourcc.strip() in (b"DXT1", b"BC1")
+        block_size = 8 if is_bc1 else 16
+        linearsize = struct.unpack_from("<I", dds_data, 20)[0]
+        need_patch = False
+        new_flags = flags
+        new_linearsize = linearsize
+        if width and height:
+            calc_size = max(1, width // 4) * max(1, height // 4) * block_size
+            if not (flags & DDSD_LINEARSIZE) or linearsize == 0:
+                new_flags |= DDSD_LINEARSIZE
+                new_linearsize = calc_size
+                need_patch = True
+            for req in (DDSD_CAPS, DDSD_HEIGHT, DDSD_WIDTH, DDSD_PIXELFORMAT):
+                if not (new_flags & req):
+                    new_flags |= req
+                    need_patch = True
+        if need_patch:
+            mutable = bytearray(dds_data)
+            struct.pack_into("<I", mutable, 8, new_flags)
+            struct.pack_into("<I", mutable, 20, new_linearsize)
+            dds_data = bytes(mutable)
+    except Exception:
+        return None
+
     image_base = base_override or (entry.name or f"EMB_{entry.index:03d}.dds")
-    image_name = f"{name_prefix}{image_base}"
+    image_colorspace = "sRGB" if ".dyt" in image_base.lower() else "Non-Color"
+    source_tag = os.path.splitext(os.path.basename(emb_path))[0] if emb_path else "emb"
+    image_name = f"{name_prefix}{source_tag}_{image_base}"
     existing = bpy.data.images.get(image_name)
     if existing:
-        return existing
+        return _force_image_colorspace(existing, image_colorspace)
 
     temp_path = None
     try:
@@ -100,32 +205,47 @@ def load_emb_image(
             else (os.path.basename(entry.name) if entry.name else f"DATA{entry.index:03d}.dds")
         )
         base_name = f"{name_prefix}{base_name}"
-        temp_path = os.path.join(tempfile.gettempdir(), base_name)
+        temp_path = os.path.join(os.path.dirname(emb_path) or tempfile.gettempdir(), base_name)
         with open(temp_path, "wb") as tmp:
-            tmp.write(entry.data)
+            tmp.write(dds_data)
 
-        image = bpy.data.images.load(temp_path)
-        image.pack()
-        image.filepath = emb_path
+        image = None
+        try:
+            bpy.ops.image.open(
+                filepath=temp_path,
+                check_existing=False,
+                directory=os.path.dirname(temp_path),
+                files=[{"name": os.path.basename(temp_path)}],
+            )
+            image = bpy.data.images.get(os.path.basename(temp_path))
+        except Exception:
+            pass
+        if image is None:
+            image = bpy.data.images.load(temp_path, check_existing=False)
+
+        image.name = image_name
+        image.filepath = temp_path
         image["emb_source"] = emb_path
         image["emb_entry_index"] = entry.index
         image["emb_entry_name"] = entry.name
+        image = _force_image_colorspace(image, image_colorspace)
         with contextlib.suppress(Exception):
-            image.colorspace_settings.name = "sRGB"
+            image.pack()
     except Exception as error:
         print("Failed to load EMB image:", entry.name, error)
         image = None
     finally:
-        try:
+        # Remove the temp file after packing into Blender
+        with contextlib.suppress(Exception):
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
-        except Exception:
-            pass
 
     return image
 
 
-def _extract_dyt_lines(image: bpy.types.Image, base_name: str) -> dict[str, bpy.types.Image]:
+def _extract_dyt_lines(
+    image: bpy.types.Image, base_name: str, block_index: int = 0, material_name: str | None = None
+) -> dict[str, bpy.types.Image]:
     results: dict[str, bpy.types.Image] = {}
     width, height = image.size
     if height <= 0 or width <= 0:
@@ -150,19 +270,33 @@ def _extract_dyt_lines(image: bpy.types.Image, base_name: str) -> dict[str, bpy.
         return buf
 
     labels = ["primary", "rim", "spec", "secondary"]
+    start_line = max(0, block_index) * 4
     for idx, label in enumerate(labels):
-        start_row = idx * line_height
+        start_row = (start_line + idx) * line_height
         if start_row >= height:
             break
         buf = slice_rows(start_row, line_height)
-        new_name = f"{base_name}_{label}"
+        mat_suffix = f"_{material_name}" if material_name else ""
+        new_name = f"{base_name}{mat_suffix}_{block_index}_{label}"
+        existing = bpy.data.images.get(new_name)
+        if existing:
+            try:
+                valid_size = existing.size[0] == width and existing.size[1] == line_height
+                has_pixels = (
+                    bool(existing.has_data) and len(existing.pixels) >= width * line_height * 4
+                )
+            except Exception:
+                valid_size = False
+                has_pixels = False
+            if valid_size and has_pixels:
+                results[label] = existing
+                continue
         new_img = bpy.data.images.new(
             new_name, width=width, height=line_height, alpha=True, float_buffer=True
         )
-        with contextlib.suppress(Exception):
-            new_img.colorspace_settings.name = "sRGB"
         new_img.pixels = buf
         new_img.pack()
+        new_img = _force_image_colorspace(new_img, "sRGB")
         results[label] = new_img
 
     return results

@@ -1,13 +1,22 @@
 import contextlib
 import math
 import os
+from functools import cache
+from pathlib import Path
 
 import bpy
 import mathutils
 
 from ...ui import sampler_defs_to_collection
 from ...utils import remove_unused_vertex_groups
-from ..EMB import attach_emb_textures_to_material, locate_emb_files
+from ..EMB import (
+    _extract_dyt_lines,
+    attach_emb_textures_to_material,
+    emb_prefix_from_path,
+    load_emb_image,
+    locate_emb_files,
+)
+from ..EMM import locate_emm, parse_emm
 from ..ESK import ESK_File, build_armature, parse_esk
 from .EMD import (
     EMD_File,
@@ -25,7 +34,6 @@ def bind_weights(
     arm_obj: bpy.types.Object,
     esk: ESK_File,
 ):
-    # Create vertex groups for all real bones (skip dummy root at index 0)
     vgroups_by_name: dict[str, bpy.types.VertexGroup] = {}
     for bone in esk.bones[1:]:
         if not bone.name:
@@ -72,7 +80,6 @@ def bind_weights(
                                 "REPLACE",
                             )
     else:
-        # Fallback: no palettes in the file, so treat bone_ids as global ESK indices.
         for vertex_index, vertex in enumerate(sub.vertices):
             total_weight = sum(vertex.bone_weights)
             if total_weight > 1e-6:
@@ -105,6 +112,59 @@ def bind_weights(
     modifier.object = arm_obj
     modifier.show_in_editmode = True
     modifier.show_on_cage = True
+
+
+@cache
+def _get_shader_template(template_name: str = "shader") -> bpy.types.Material | None:
+    # importer.py -> src/xv2/EMD -> parents[2] == src; shader in src/shader/shader.blend
+    blend_path = Path(__file__).resolve().parents[2] / "shader" / "shader.blend"
+    if not blend_path.is_file():
+        return None
+    try:
+        loaded = []
+        with bpy.data.libraries.load(str(blend_path), link=False) as (data_from, data_to):
+            if template_name in data_from.materials:
+                data_to.materials = [template_name]
+                loaded = list(data_to.materials)
+        if loaded:
+            mat = loaded[0]
+            if isinstance(mat, str):
+                mat = bpy.data.materials.get(mat)
+            return mat
+    except Exception as exc:
+        print("Failed to load shader template:", exc)
+    return None
+
+
+def _instantiate_shader_material(name: str) -> bpy.types.Material:
+    template_name = "eye_shader" if name and name.lower().startswith("eye_") else "shader"
+    template = _get_shader_template(template_name)
+    # If the cached template was removed, refresh the cache and try again.
+    try:
+        missing = (template is None) or (template.name not in bpy.data.materials)
+    except ReferenceError:
+        missing = True
+    if missing:
+        _get_shader_template.cache_clear()
+        template = _get_shader_template(template_name)
+    if template:
+        try:
+            mat = template.copy()
+        except ReferenceError:
+            _get_shader_template.cache_clear()
+            template = _get_shader_template(template_name)
+            mat = template.copy() if template else None
+        if mat:
+            mat.name = name or template.name
+            mat.use_fake_user = False
+            mat["_xv2_shader_template"] = True
+            return mat
+    material = bpy.data.materials.new(name=name or "EMD_Material")
+    material.use_nodes = True
+    if material.node_tree:
+        material.node_tree.nodes.clear()
+        material.node_tree.links.clear()
+    return material
 
 
 def bind_weights_built(
@@ -168,12 +228,133 @@ def bind_weights_built(
 
 
 def create_material(submesh_name: str) -> bpy.types.Material:
-    material = bpy.data.materials.new(name=submesh_name or "EMD_Material")
-    material.use_nodes = True
-    if material.node_tree:
-        material.node_tree.nodes.clear()
-        material.node_tree.links.clear()
-    return material
+    return _instantiate_shader_material(submesh_name)
+
+
+def _image_from_sampler(
+    sampler_defs,
+    sampler_index: int,
+    emb_main,
+) -> bpy.types.Image | None:
+    if not sampler_defs or emb_main is None:
+        return None
+    if not (0 <= sampler_index < len(sampler_defs)):
+        return None
+    tex_index = int(sampler_defs[sampler_index].texture_index)
+    if tex_index < 0 or tex_index >= len(emb_main.entries):
+        return None
+    entry = emb_main.entries[tex_index]
+    return load_emb_image(entry, emb_main.path, emb_prefix_from_path(emb_main.path))
+
+
+def _apply_shader_material(
+    mat: bpy.types.Material,
+    sampler_defs,
+    emb_main,
+    emb_dyt,
+    emm_info,
+) -> None:
+    if not mat or not mat.node_tree:
+        return
+
+    nodes = mat.node_tree.nodes
+
+    # Apply sampler textures
+    emb_node = nodes.get("XV2_EMB_SAMPLER")
+    dual_node = nodes.get("XV2_DUAL_EMB_SAMPLER")
+    msk_node = nodes.get("XV2_MSK_EMB_SAMPLER")
+    dual_toggle = nodes.get("XV2_DUAL_EMB_TOGGLE")
+    msk_toggle = nodes.get("XV2_MSK_EMB_TOGGLE")
+
+    main_img = _image_from_sampler(sampler_defs, 0, emb_main)
+    dual_img = _image_from_sampler(sampler_defs, 2, emb_main)
+
+    def _configure_image(tex_node: bpy.types.Node, img: bpy.types.Image, is_dyt: bool) -> None:
+        tex_node.image = img
+        try:
+            tex_node.interpolation = "Closest" if is_dyt else "Linear"
+            tex_node.projection = "FLAT"
+            tex_node.extension = "EXTEND" if is_dyt else "REPEAT"
+            if not is_dyt and img and hasattr(img, "colorspace_settings"):
+                img.colorspace_settings.name = "Non-Color"
+        except Exception:
+            pass
+
+    if emb_node and main_img:
+        _configure_image(emb_node, main_img, is_dyt=False)
+    use_dual = dual_img is not None and emm_info and "d2_" in (emm_info.shader or "")
+    if dual_node and dual_img and use_dual:
+        _configure_image(dual_node, dual_img, is_dyt=False)
+    if dual_toggle and hasattr(dual_toggle, "inputs"):
+        with contextlib.suppress(Exception):
+            dual_toggle.inputs[0].default_value = 1.0 if use_dual else 0.0
+    use_msk = dual_img is not None and emm_info and "MSK" in (emm_info.shader or "")
+    if msk_node and dual_img and use_msk:
+        _configure_image(msk_node, dual_img, is_dyt=False)
+    if msk_toggle and hasattr(msk_toggle, "inputs"):
+        with contextlib.suppress(Exception):
+            msk_toggle.inputs[0].default_value = 1.0 if use_msk else 0.0
+
+    # Apply DYT lines based on MatScale1X (default 0)
+    mat_scale = 0
+    if emm_info:
+        for param in emm_info.params:
+            if param.name == "MatScale1X":
+                with contextlib.suppress(Exception):
+                    mat_scale = int(round(float(param.value)))
+                break
+    # Fallback: use custom prop on material if present
+    if mat_scale == 0 and "emm_param_MatScale1X" in mat:
+        with contextlib.suppress(Exception):
+            mat_scale = int(round(float(mat.get("emm_param_MatScale1X", 0))))
+
+    if emb_dyt and emb_dyt.entries:
+        dyt_entry = emb_dyt.entries[0]
+        base_name = os.path.splitext(dyt_entry.name or f"DATA{dyt_entry.index:03d}.dds")[0]
+        dyt_image = load_emb_image(
+            dyt_entry,
+            emb_dyt.path,
+            emb_prefix_from_path(emb_dyt.path),
+            base_override=f"{base_name}.dyt.dds",
+        )
+        if dyt_image:
+            block_idx = max(0, mat_scale)
+            lines = _extract_dyt_lines(
+                dyt_image, f"DYT_{block_idx}", block_index=block_idx, material_name=mat.name
+            )
+            primary = lines.get("primary") or next(iter(lines.values()), None)
+            rim = lines.get("rim")
+            spec = lines.get("spec")
+            secondary = lines.get("secondary")
+
+            assign_map = {
+                "XV2_DYT_MAIN": primary,
+                "XV2_DYT_RIM": rim,
+                "XV2_DYT_SPEC": spec,
+                "XV2_DYT_DUAL": secondary,
+            }
+            for node_name, img_obj in assign_map.items():
+                node = nodes.get(node_name)
+                if node and img_obj:
+                    _configure_image(node, img_obj, is_dyt=True)
+
+    def _apply_params_to_group(group_name: str) -> None:
+        group_node = nodes.get(group_name)
+        if not (group_node and hasattr(group_node, "inputs") and emm_info):
+            return
+        for param in emm_info.params:
+            if "ON/OFF" in param.name:
+                continue
+            try:
+                val = float(param.value)
+            except Exception:
+                continue
+            if param.name in group_node.inputs:
+                with contextlib.suppress(Exception):
+                    group_node.inputs[param.name].default_value = val
+
+    _apply_params_to_group("XV2_BASIC_SHADER")
+    _apply_params_to_group("XV2_BASIC_EYE_SHADER")
 
 
 def import_emd(
@@ -191,6 +372,9 @@ def import_emd(
 ):
     emd: EMD_File = parse_emd(path)
     emb_main, emb_dyt = locate_emb_files(path)
+    emm_path = locate_emm(path)
+    emm_materials = parse_emm(emm_path) if emm_path else []
+    emm_by_name = {mat.name.lower(): mat for mat in emm_materials}
 
     folder = os.path.dirname(path)
     base = os.path.basename(path)
@@ -423,15 +607,32 @@ def import_emd(
                 else:
                     me.materials.append(material)
 
+                emm_info = emm_by_name.get(sub.name.lower()) if "emm_by_name" in locals() else None
+                if emm_info:
+                    material["emm_name"] = emm_info.name
+                    material["emm_shader"] = emm_info.shader
+                    material["emm_params"] = [
+                        {"name": p.name, "type": int(p.type), "value": p.value}
+                        for p in emm_info.params
+                    ]
+                    for p in emm_info.params:
+                        key = f"emm_param_{p.name}"
+                        if key not in material:
+                            material[key] = p.value
+                _apply_shader_material(
+                    material, sub.texture_sampler_defs, emb_main, emb_dyt, emm_info
+                )
+
                 if sub.texture_sampler_defs:
                     set_sampler_custom_properties(material, sub.texture_sampler_defs)
                     sampler_defs_to_collection(material, sub.texture_sampler_defs)
-                    attach_emb_textures_to_material(
-                        material,
-                        sub.texture_sampler_defs,
-                        emb_main,
-                        emb_dyt,
-                    )
+                    if not material.get("_xv2_shader_template"):
+                        attach_emb_textures_to_material(
+                            material,
+                            sub.texture_sampler_defs,
+                            emb_main,
+                            emb_dyt,
+                        )
                 material["emd_vertex_flags"] = int(sub.vertex_flags)
                 if sub.triangle_groups and sub.triangle_groups[0].bone_names:
                     material["emd_bone_palette"] = list(sub.triangle_groups[0].bone_names)
