@@ -4,7 +4,7 @@ Blender add-on for importing and exporting Dragon Ball Xenoverse 2 assets. Built
 
 Huge thanks to [Lazybone](https://github.com/LazyBone152) for their [Xv2CoreLib](https://github.com/LazyBone152/XV2-Tools) without their efforts, this project wouldn't have been possible
 
-More thanks to ChaosBeat and AreCreeps for creating the basic shader used in this tool
+More thanks to ChaosBeat for creating the basic shader used in this tool
 
 ## Features & Status
 
