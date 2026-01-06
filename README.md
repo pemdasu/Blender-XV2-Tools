@@ -13,11 +13,11 @@ More thanks to ChaosBeat and AreCreeps for creating the basic shader used in thi
 | EMD | ✅ | ✅ ||
 | DYT.EMB | ✅ | ❌ ||
 | EMB | ✅ | ❌ ||
-| ESK | ✅ | ⏳ ||
+| ESK | ✅ | ✅ ||
 | EAN | ✅ | ✅ ||
 | CAM.EAN | ✅ | ✅ ||
+| EMM | ✅ | ❌ ||
 | BCS | ⏳ | ❌ ||
-| EMM | ⏳ | ❌ ||
 | EMO | ⏳ | ⏳ ||
 | EMA | ⏳ | ⏳ | probably not mat.ema files only obj.ema |
 | NSK | ⏳ | ⏳ ||
