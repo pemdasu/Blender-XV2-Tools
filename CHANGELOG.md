@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.7
+
+- Fixed thumb import for ESKs
+- Exporting EANs now properly keeps the ean index sorting
+- Added option to add "dummy" keyframes on ean export
+
+## 1.0.6
+
+- Added auto bake actions on export for EAN and CAM.EAN
+
+## 1.0.5
+
+- Fixed EAN export not properly exporting multiple actions
+
 ## 1.0.4
 
 - Fixed CAM.EAN roll being inverted

@@ -423,9 +423,10 @@ def import_ean_animations(
             with contextlib.suppress(Exception):
                 bpy.data.armatures.remove(arm_data, do_unlink=True)
 
+    action_prefix = arm_obj.name or ean_arm_name
     for anim in sorted(ean.animations, key=lambda a: a.index):
         anim_base = anim.name or f"Anim_{anim.index}"
-        action_name = f"{ean_arm_name}|{anim.index}|{anim_base}"
+        action_name = f"{action_prefix}|{anim.index}|{anim_base}"
         action = bpy.data.actions.new(action_name)
         action.use_fake_user = True
         arm_obj.animation_data_create()

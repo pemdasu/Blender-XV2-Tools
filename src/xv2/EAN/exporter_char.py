@@ -1,3 +1,4 @@
+import contextlib
 import secrets
 import struct
 from collections import defaultdict
@@ -130,16 +131,6 @@ def _collect_actions(arm_obj: bpy.types.Object, bone_names: set[str]) -> list[bp
     return actions
 
 
-def _parse_anim_index(action_name: str, fallback: int) -> int:
-    parts = action_name.split("|")
-    if len(parts) >= 3:
-        try:
-            return int(parts[1])
-        except ValueError:
-            pass
-    return fallback
-
-
 def _parse_anim_meta(action_name: str, fallback_idx: int) -> tuple[int, str]:
     parts = action_name.split("|")
     anim_idx = fallback_idx
@@ -154,6 +145,58 @@ def _parse_anim_meta(action_name: str, fallback_idx: int) -> tuple[int, str]:
     return anim_idx, anim_name
 
 
+def _is_character_action_name(action_name: str) -> bool:
+    parts = action_name.split("|")
+    if len(parts) < 3:
+        return False
+    try:
+        int(parts[1])
+    except ValueError:
+        return False
+    return True
+
+
+def _parse_action_index(action_name: str) -> int | None:
+    parts = action_name.split("|")
+    if len(parts) < 2:
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def _read_ean_index(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _action_anim_index(action: bpy.types.Action, fallback_idx: int) -> int:
+    idx = _read_ean_index(action.get("ean_index"))
+    if idx is not None:
+        return idx
+    anim_idx, _ = _parse_anim_meta(action.name, fallback_idx)
+    return anim_idx
+
+
+def _action_sort_key(action: bpy.types.Action) -> tuple:
+    idx = _read_ean_index(action.get("ean_index"))
+    if idx is not None:
+        return (0, idx, action.name)
+    name_idx = _parse_action_index(action.name)
+    if name_idx is not None:
+        return (1, name_idx, action.name)
+    return (2, action.name)
+
+
 def _pack_half(val: float) -> bytes:
     return struct.pack("<e", val)
 
@@ -163,9 +206,12 @@ def _build_animation_bytes(
     arm_obj: bpy.types.Object,
     esk: ESK_File,
     rest_locals: dict[str, mathutils.Matrix],
+    depsgraph: bpy.types.Depsgraph,
+    add_dummy_rest: bool = False,
 ) -> tuple[bytes, int]:
     scene = bpy.context.scene
     original_frame = scene.frame_current
+    original_action = arm_obj.animation_data.action if arm_obj.animation_data else None
 
     frames_by_bone: dict[str, dict[str, set[int]]] = defaultdict(
         lambda: {"pos": set(), "rot": set(), "scl": set()}
@@ -177,19 +223,38 @@ def _build_animation_bytes(
             continue
         bone_name = fc.data_path.split('"')[1]
         target = None
-        if fc.data_path.endswith("location"):
-            target = "pos"
-        elif fc.data_path.endswith("rotation_quaternion"):
-            target = "rot"
-        elif fc.data_path.endswith("scale"):
-            target = "scl"
+        path_tail = fc.data_path.rsplit(".", 1)[-1]
+        match path_tail:
+            case "location":
+                target = "pos"
+            case "rotation_quaternion":
+                target = "rot"
+            case "scale":
+                target = "scl"
         if target is None:
             continue
         frames = {int(round(pt.co.x)) for pt in fc.keyframe_points}
         frames_by_bone[bone_name][target].update(frames)
         global_frames.update(frames)
 
+    dummy_bones: set[str] = set()
+    if add_dummy_rest:
+        for bone in esk.bones:
+            if bone.index == 0:
+                continue
+            bone_frames = frames_by_bone[bone.name]
+            if bone_frames["pos"] or bone_frames["rot"] or bone_frames["scl"]:
+                continue
+            dummy_bones.add(bone.name)
+            bone_frames["pos"].add(0)
+            bone_frames["rot"].add(0)
+            bone_frames["scl"].add(0)
+            global_frames.add(0)
+
     if not global_frames:
+        scene.frame_set(original_frame)
+        if arm_obj.animation_data:
+            arm_obj.animation_data.action = original_action
         return b"", 0
 
     frame_count = max(global_frames) + 1
@@ -204,6 +269,8 @@ def _build_animation_bytes(
         if not sample_frames:
             continue
         sample_frames_by_bone[bone_name] = sample_frames
+        if bone_name in dummy_bones:
+            continue
         for f in sample_frames:
             frames_to_bones[f].append(bone_name)
 
@@ -212,8 +279,11 @@ def _build_animation_bytes(
     ] = defaultdict(dict)
     for frame in sorted(frames_to_bones.keys()):
         scene.frame_set(frame)
+        with contextlib.suppress(Exception):
+            bpy.context.view_layer.update()
+        arm_eval = arm_obj.evaluated_get(depsgraph)
         for bone_name in frames_to_bones[frame]:
-            pbone = arm_obj.pose.bones.get(bone_name)
+            pbone = arm_eval.pose.bones.get(bone_name)
             if pbone is None:
                 continue
             delta = mathutils.Matrix.LocRotScale(
@@ -225,6 +295,12 @@ def _build_animation_bytes(
             baked_local = rest_local @ delta
             loc, rot, scl = baked_local.decompose()
             samples[bone_name][frame] = (loc, rot, scl)
+
+    if dummy_bones:
+        for bone_name in dummy_bones:
+            rest_local = rest_locals.get(bone_name, mathutils.Matrix.Identity(4))
+            loc, rot, scl = rest_local.decompose()
+            samples[bone_name][0] = (loc, rot, scl)
 
     nodes: list[
         tuple[int, list[tuple[int, int, int, list[tuple[int, float, float, float, float]]]]]
@@ -246,36 +322,38 @@ def _build_animation_bytes(
 
         comps: list[tuple[int, int, int, list[tuple[int, float, float, float, float]]]] = []
 
-        def build_component(comp_type: ComponentType, frames: set[int]):
+        def build_component(comp_type: ComponentType, frames: set[int], pad_last: bool = True):
             if not frames:
                 return None
             keyframes = []
             for f in sorted(frames):
                 loc, rot, scl = samples[bone.name][f]
-                if comp_type == ComponentType.Position:
-                    vals = (loc.x, loc.y, loc.z, 1.0)
-                elif comp_type == ComponentType.Rotation:
-                    vals = (rot.x, rot.y, rot.z, rot.w)
-                else:
-                    vals = (scl.x, scl.y, scl.z, 1.0)
+                match comp_type:
+                    case ComponentType.Position:
+                        vals = (loc.x, loc.y, loc.z, 1.0)
+                    case ComponentType.Rotation:
+                        vals = (rot.x, rot.y, rot.z, rot.w)
+                    case _:
+                        vals = (scl.x, scl.y, scl.z, 1.0)
                 keyframes.append((f, *vals))
 
             end_frame = frame_count - 1
             if keyframes[0][0] != 0:
                 first_vals = keyframes[0][1:]
                 keyframes.insert(0, (0, *first_vals))
-            if keyframes[-1][0] != end_frame:
+            if pad_last and keyframes[-1][0] != end_frame:
                 last_vals = keyframes[-1][1:]
                 keyframes.append((end_frame, *last_vals))
 
             return comp_type, 7, 0, keyframes
 
+        dummy_only = bone.name in dummy_bones
         for comp_type, frames in (
             (ComponentType.Position, pos_frames),
             (ComponentType.Rotation, rot_frames),
             (ComponentType.Scale, scale_frames),
         ):
-            comp = build_component(comp_type, frames)
+            comp = build_component(comp_type, frames, pad_last=not dummy_only)
             if comp:
                 comps.append(comp)
 
@@ -344,83 +422,130 @@ def _build_animation_bytes(
             anim[comp_start + 12 : comp_start + 16] = struct.pack("<I", float_offset - comp_start)
 
     anim.extend(b"\x00" * 12)
+
+    # Restore original action and frame
+    scene.frame_set(original_frame)
+    if arm_obj.animation_data:
+        arm_obj.animation_data.action = original_action
     return bytes(anim), frame_count
 
 
-def export_ean(filepath: str, arm_obj: bpy.types.Object) -> bool:
+def export_ean(
+    filepath: str, arm_obj: bpy.types.Object, add_dummy_rest: bool = False
+) -> tuple[bool, str | None]:
     if arm_obj is None or arm_obj.type != "ARMATURE":
-        return False
+        return False, "Select an armature to export."
 
-    esk, skeleton_bytes, rest_locals = _build_skeleton_from_armature(arm_obj)
-    actual_bone_names = {b.name for b in esk.bones if b.index != 0}
+    original_action = None
+    restore_action = False
 
-    actions = _collect_actions(arm_obj, actual_bone_names)
-    if not actions:
-        return False
+    try:
+        esk, skeleton_bytes, rest_locals = _build_skeleton_from_armature(arm_obj)
+        actual_bone_names = {b.name for b in esk.bones if b.index != 0}
 
-    animations_by_index: dict[int, tuple[bytes, str]] = {}
-    max_index = -1
-    for fallback_idx, act in enumerate(sorted(actions, key=lambda a: a.name)):
-        anim_index, anim_label = _parse_anim_meta(act.name, fallback_idx)
-        anim_bytes, frame_count = _build_animation_bytes(act, arm_obj, esk, rest_locals)
-        if not anim_bytes:
-            continue
-        animations_by_index[anim_index] = (anim_bytes, anim_label)
-        max_index = max(max_index, anim_index)
-
-    if max_index < 0:
-        return False
-
-    animation_count = max_index + 1
-
-    out = bytearray([35, 69, 65, 78, 254, 255, 32, 0])
-    out.extend(struct.pack("<I", 37568))
-    out.extend(b"\x00\x00\x00\x00")
-    out.append(0)  # is_camera
-    out.append(4)
-    out.extend(struct.pack("<H", animation_count))
-    out.extend(b"\x00" * 12)
-
-    skeleton_offset = len(out)
-    out[20:24] = struct.pack("<I", skeleton_offset)
-    out.extend(skeleton_bytes)
-
-    if animation_count > 0:
-        out[24:28] = struct.pack("<I", len(out))
-        animation_table_offset = len(out)
-        for _ in range(animation_count):
-            out.extend(b"\x00\x00\x00\x00")
-
-        for idx in range(animation_count):
-            entry = animations_by_index.get(idx)
-            if not entry:
-                continue
-            anim_bytes, _ = entry
-            _align16(out)
-            out[animation_table_offset + 4 * idx : animation_table_offset + 4 * idx + 4] = (
-                struct.pack("<I", len(out))
+        collected_actions = _collect_actions(arm_obj, actual_bone_names)
+        actions = [act for act in collected_actions if _is_character_action_name(act.name)]
+        if not collected_actions:
+            return False, f"No actions with pose bone keyframes found on armature {arm_obj.name}."
+        if not actions:
+            arm_name = arm_obj.name or "Armature"
+            example_name = f"{arm_name}|0|Idle"
+            return False, (
+                f"Actions must be named '<prefix>|<index>|<label>' (e.g. {example_name})."
             )
-            out.extend(anim_bytes)
 
-        out[28:32] = struct.pack("<I", len(out))
-        name_table_offset = len(out)
-        for _ in range(animation_count):
-            out.extend(b"\x00\x00\x00\x00")
+        if arm_obj.animation_data is None:
+            arm_obj.animation_data_create()
+        original_action = arm_obj.animation_data.action
+        restore_action = True
 
-        for idx in range(animation_count):
-            entry = animations_by_index.get(idx)
-            if not entry:
-                continue
-            _, anim_label = entry
-            out[name_table_offset + 4 * idx : name_table_offset + 4 * idx + 4] = struct.pack(
-                "<I", len(out)
+        animations_by_index: dict[int, tuple[bytes, str]] = {}
+        max_index = -1
+        for fallback_idx, act in enumerate(sorted(actions, key=_action_sort_key)):
+            anim_index = _action_anim_index(act, fallback_idx)
+            _, anim_label = _parse_anim_meta(act.name, fallback_idx)
+
+            arm_obj.animation_data.action = act
+            with contextlib.suppress(Exception):
+                bpy.context.view_layer.update()
+
+            anim_bytes, frame_count = _build_animation_bytes(
+                act,
+                arm_obj,
+                esk,
+                rest_locals,
+                bpy.context.view_layer.depsgraph,
+                add_dummy_rest=add_dummy_rest,
             )
-            out.extend(anim_label.encode("ascii", "ignore"))
-            out.append(0)
+            if not anim_bytes:
+                continue
+            animations_by_index[anim_index] = (anim_bytes, anim_label)
+            max_index = max(max_index, anim_index)
 
-    with open(filepath, "wb") as f:
-        f.write(out)
-    return True
+        if max_index < 0:
+            return (
+                False,
+                "Animations were found but none had exportable keyframes on pose bones (location/rotation/scale).",
+            )
+
+        animation_count = max_index + 1
+
+        out = bytearray([35, 69, 65, 78, 254, 255, 32, 0])
+        out.extend(struct.pack("<I", 37568))
+        out.extend(b"\x00\x00\x00\x00")
+        out.append(0)  # is_camera
+        out.append(4)
+        out.extend(struct.pack("<H", animation_count))
+        out.extend(b"\x00" * 12)
+
+        skeleton_offset = len(out)
+        out[20:24] = struct.pack("<I", skeleton_offset)
+        out.extend(skeleton_bytes)
+
+        if animation_count > 0:
+            out[24:28] = struct.pack("<I", len(out))
+            animation_table_offset = len(out)
+            for _ in range(animation_count):
+                out.extend(b"\x00\x00\x00\x00")
+
+            for idx in range(animation_count):
+                entry = animations_by_index.get(idx)
+                if not entry:
+                    continue
+                anim_bytes, _ = entry
+                _align16(out)
+                out[animation_table_offset + 4 * idx : animation_table_offset + 4 * idx + 4] = (
+                    struct.pack("<I", len(out))
+                )
+                out.extend(anim_bytes)
+
+            out[28:32] = struct.pack("<I", len(out))
+            name_table_offset = len(out)
+            for _ in range(animation_count):
+                out.extend(b"\x00\x00\x00\x00")
+
+            for idx in range(animation_count):
+                entry = animations_by_index.get(idx)
+                if not entry:
+                    continue
+                _, anim_label = entry
+                out[name_table_offset + 4 * idx : name_table_offset + 4 * idx + 4] = struct.pack(
+                    "<I", len(out)
+                )
+                out.extend(anim_label.encode("ascii", "ignore"))
+                out.append(0)
+
+        with open(filepath, "wb") as f:
+            f.write(out)
+        return True, None
+    except Exception as exc:
+        import traceback
+
+        traceback.print_exc()
+        return False, f"Unexpected error while exporting: {exc}"
+    finally:
+        if restore_action and getattr(arm_obj, "animation_data", None):
+            arm_obj.animation_data.action = original_action
 
 
 __all__ = ["export_ean"]

@@ -1,3 +1,4 @@
+import math
 import struct
 
 import bpy
@@ -24,6 +25,7 @@ class ESK_Bone:
         self.parent_index = parent_index
         self.child_index = child_index
         self.sibling_index = sibling_index
+        self.absolute_matrix: mathutils.Matrix | None = None
 
 
 class ESK_File:
@@ -46,9 +48,13 @@ def parse_esk(path: str) -> ESK_File:
     offs = skeleton_offset
 
     bone_count = struct.unpack_from("<h", data, offs + 0)[0]
+    _ = struct.unpack_from("<h", data, offs + 2)[0]
     bone_index_table_offset = struct.unpack_from("<I", data, offs + 4)[0] + offs
     name_table_offset = struct.unpack_from("<I", data, offs + 8)[0] + offs
-    skinning_table_offset = struct.unpack_from("<I", data, offs + 12)[0] + offs
+    relative_transform_offset = struct.unpack_from("<I", data, offs + 12)[0] + offs
+    absolute_matrix_offset = struct.unpack_from("<I", data, offs + 16)[0]
+    if absolute_matrix_offset:
+        absolute_matrix_offset += offs
 
     for bone_index in range(bone_count):
         bone_index_offset = bone_index_table_offset + 8 * bone_index
@@ -60,7 +66,7 @@ def parse_esk(path: str) -> ESK_File:
         name_off = offs + name_rel
         name = read_cstring(data, name_off)
 
-        t_off = skinning_table_offset + 48 * bone_index
+        t_off = relative_transform_offset + 48 * bone_index
         px, py, pz, pw, rx, ry, rz, rw, sx, sy, sz, sw = struct.unpack_from("<12f", data, t_off)
 
         pos = mathutils.Vector((px, py, pz)) * pw
@@ -69,7 +75,19 @@ def parse_esk(path: str) -> ESK_File:
 
         local_mat = mathutils.Matrix.LocRotScale(pos, rot, scl)
 
-        esk.bones.append(ESK_Bone(name, bone_index, local_mat, parent_idx, child_idx, sibling_idx))
+        esk_bone = ESK_Bone(name, bone_index, local_mat, parent_idx, child_idx, sibling_idx)
+        if absolute_matrix_offset:
+            m_off = absolute_matrix_offset + 64 * bone_index
+            m_vals = struct.unpack_from("<16f", data, m_off)
+            esk_bone.absolute_matrix = mathutils.Matrix(
+                (
+                    (m_vals[0], m_vals[1], m_vals[2], m_vals[3]),
+                    (m_vals[4], m_vals[5], m_vals[6], m_vals[7]),
+                    (m_vals[8], m_vals[9], m_vals[10], m_vals[11]),
+                    (m_vals[12], m_vals[13], m_vals[14], m_vals[15]),
+                )
+            )
+        esk.bones.append(esk_bone)
 
     return esk
 
@@ -93,6 +111,7 @@ def build_armature(esk: ESK_File, armature_name: str = "ESK_Armature") -> bpy.ty
         ebones_by_index[bone.index] = edit_bone
 
     world_mats: dict[int, mathutils.Matrix] = {}
+    world_abs_mats: dict[int, mathutils.Matrix] = {}
 
     def compute_world(bone_data: ESK_Bone) -> mathutils.Matrix:
         if bone_data.index in world_mats:
@@ -107,16 +126,55 @@ def build_armature(esk: ESK_File, armature_name: str = "ESK_Armature") -> bpy.ty
         world_mats[bone_data.index] = matrix
         return matrix
 
+    def compute_world_abs(bone_data: ESK_Bone) -> mathutils.Matrix | None:
+        abs_mat = bone_data.absolute_matrix
+        if abs_mat is None:
+            return None
+        if bone_data.index in world_abs_mats:
+            return world_abs_mats[bone_data.index]
+        # ESK absolute matrices are stored with translation in the last row.
+        matrix = abs_mat.transposed().inverted()
+        world_abs_mats[bone_data.index] = matrix
+        return matrix
+
     for bone in bones:
-        world_matrix = compute_world(bone)
         edit_bone = ebones_by_index[bone.index]
 
-        head = world_matrix.to_translation()
-        rotation_matrix = world_matrix.to_3x3()
-        tail = head + (rotation_matrix @ mathutils.Vector((0.0, 0.1, 0.0)))
+        is_thumb = "thumb" in (bone.name or "").lower()
+        if is_thumb:
+            world_matrix = compute_world_abs(bone) or compute_world(bone)
+            head = world_matrix.to_translation()
+            rotation_matrix = world_matrix.to_quaternion().to_matrix()
+            bone_length = 0.0
+            if 0 < bone.child_index < len(esk.bones):
+                child_bone = esk.bones[bone.child_index]
+                child_world = compute_world_abs(child_bone) or compute_world(child_bone)
+                bone_length = (child_world.to_translation() - head).length
+            elif bone.matrix is not None:
+                bone_length = bone.matrix.to_translation().length
+            if bone_length <= 1e-6:
+                bone_length = 0.1
+            direction = rotation_matrix @ mathutils.Vector((0.0, 1.0, 0.0))
+            if direction.length <= 1e-6:
+                direction = mathutils.Vector((0.0, 1.0, 0.0))
+            direction.normalize()
 
-        edit_bone.head = head
-        edit_bone.tail = tail
+            tail = head + (direction * bone_length)
+            edit_bone.head = head
+            edit_bone.tail = tail
+
+            ref_axis = rotation_matrix @ mathutils.Vector((1.0, 0.0, 0.0))
+            if ref_axis.length <= 1e-6:
+                ref_axis = mathutils.Vector((0.0, 0.0, 1.0))
+            edit_bone.align_roll(ref_axis)
+            edit_bone.roll -= math.radians(90.0)
+        else:
+            world_matrix = compute_world(bone)
+            head = world_matrix.to_translation()
+            rotation_matrix = world_matrix.to_3x3()
+            tail = head + (rotation_matrix @ mathutils.Vector((0.0, 0.1, 0.0)))
+            edit_bone.head = head
+            edit_bone.tail = tail
 
         if bone.parent_index > 0 and bone.parent_index in ebones_by_index:
             edit_bone.parent = ebones_by_index[bone.parent_index]

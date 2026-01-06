@@ -35,6 +35,8 @@ from .xv2.EAN.exporter import export_cam_ean, export_ean
 from .xv2.EAN.importer import import_cam_ean, import_ean_animations
 from .xv2.EMD.exporter import export_selected
 from .xv2.EMD.importer import import_emd
+from .xv2.ESK.exporter import export_esk
+from .xv2.ESK.importer import import_esk
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
     directory: StringProperty(subtype="DIR_PATH")  # type: ignore
 
     filename_ext = ".emd"
-    filter_glob: StringProperty(default="*.emd", options={"HIDDEN"})  # type: ignore
+    filter_glob: StringProperty(default="*.emd;*.esk", options={"HIDDEN"})  # type: ignore
 
     auto_detect_esk: BoolProperty(  # type: ignore
         name="Auto-detect ESK",
@@ -102,7 +104,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
             layout.prop(self, "merge_distance")
         layout.prop(self, "tris_to_quads")
         if not self.auto_detect_esk:
-            layout.prop(self, "esk_path", text="Skeleton (.esk)")
+            layout.label(text="Tip: select an .esk in the file browser.")
 
     def execute(self, context):
         paths: list[str] = []
@@ -113,6 +115,20 @@ class IMPORT_OT_emd(Operator, ImportHelper):
             paths.append(self.filepath)
 
         esk_path = "" if self.auto_detect_esk else self.esk_path
+        filtered_paths: list[str] = []
+        selected_esk: str | None = None
+        for path in paths:
+            if os.path.splitext(path)[1].lower() == ".esk":
+                if selected_esk is None:
+                    selected_esk = path
+                continue
+            filtered_paths.append(path)
+        paths = filtered_paths
+        if not self.auto_detect_esk and not esk_path and selected_esk:
+            esk_path = selected_esk
+        if not paths:
+            self.report({"ERROR"}, "Select one or more .emd files to import.")
+            return {"CANCELLED"}
 
         def is_scd_path(p: str) -> bool:
             return "_scd" in Path(p).stem.lower()
@@ -146,6 +162,25 @@ class IMPORT_OT_emd(Operator, ImportHelper):
                 link_scd_armatures(arm_obj, main_arm_obj)
 
         return {"FINISHED"}
+
+
+# ---------------------------------------------------------------------------
+# ESK Import (ESK)
+# ---------------------------------------------------------------------------
+class IMPORT_OT_esk(Operator, ImportHelper):
+    bl_idname = "import_scene.xv2_esk"
+    bl_label = "Import ESK (Xenoverse 2)"
+
+    filename_ext = ".esk"
+    filter_glob: StringProperty(default="*.esk", options={"HIDDEN"})  # type: ignore
+
+    def execute(self, context):
+        arm = import_esk(self.filepath)
+        if arm:
+            self.report({"INFO"}, f"Imported ESK armature {arm.name}")
+            return {"FINISHED"}
+        self.report({"ERROR"}, "Failed to import ESK.")
+        return {"CANCELLED"}
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +246,10 @@ def menu_func(self, context):
         text="Dragon Ball XV2 EMD (.emd)",
     )
     self.layout.operator(
+        IMPORT_OT_esk.bl_idname,
+        text="Dragon Ball XV2 ESK (.esk)",
+    )
+    self.layout.operator(
         IMPORT_OT_ean.bl_idname,
         text="Dragon Ball XV2 EAN (.ean)",
     )
@@ -224,6 +263,10 @@ def menu_func_export(self, context):
     self.layout.operator(
         EXPORT_OT_emd.bl_idname,
         text="Dragon Ball XV2 EMD (.emd)",
+    )
+    self.layout.operator(
+        EXPORT_OT_esk.bl_idname,
+        text="Dragon Ball XV2 ESK (.esk)",
     )
     self.layout.operator(
         EXPORT_OT_ean.bl_idname,
@@ -278,23 +321,48 @@ class EXPORT_OT_cam_ean(Operator, ExportHelper):
         return {"CANCELLED"}
 
 
-class EXPORT_OT_ean(Operator, ExportHelper):
-    bl_idname = "export_scene.xv2_ean"
-    bl_label = "Export EAN (Xenoverse 2)"
+class EXPORT_OT_esk(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_esk"
+    bl_label = "Export ESK (Xenoverse 2)"
 
-    filename_ext = ".ean"
-    filter_glob: StringProperty(default="*.ean", options={"HIDDEN"})  # type: ignore
+    filename_ext = ".esk"
+    filter_glob: StringProperty(default="*.esk", options={"HIDDEN"})  # type: ignore
 
     def execute(self, context):
         arm = context.object if context.object and context.object.type == "ARMATURE" else None
         if arm is None:
             self.report({"ERROR"}, "Select an armature to export.")
             return {"CANCELLED"}
-        ok = export_ean(self.filepath, arm)
+        ok, error = export_esk(self.filepath, arm)
+        if ok:
+            self.report({"INFO"}, "Exported ESK")
+            return {"FINISHED"}
+        self.report({"ERROR"}, error or "Failed to export ESK.")
+        return {"CANCELLED"}
+
+
+class EXPORT_OT_ean(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_ean"
+    bl_label = "Export EAN (Xenoverse 2)"
+
+    filename_ext = ".ean"
+    filter_glob: StringProperty(default="*.ean", options={"HIDDEN"})  # type: ignore
+    add_dummy_rest_keys: BoolProperty(  # type: ignore
+        name="Add Dummy Keyframes",
+        description="Add a rest pose keyframe at frame 0 for bones with no keyframes",
+        default=False,
+    )
+
+    def execute(self, context):
+        arm = context.object if context.object and context.object.type == "ARMATURE" else None
+        if arm is None:
+            self.report({"ERROR"}, "Select an armature to export.")
+            return {"CANCELLED"}
+        ok, error = export_ean(self.filepath, arm, add_dummy_rest=self.add_dummy_rest_keys)
         if ok:
             self.report({"INFO"}, "Exported EAN")
             return {"FINISHED"}
-        self.report({"ERROR"}, "Failed to export EAN.")
+        self.report({"ERROR"}, error or "Failed to export EAN.")
         return {"CANCELLED"}
 
 
@@ -310,9 +378,11 @@ classes = [
     VIEW3D_PT_scd_link,
     XV2_OT_scd_link_to_armature,
     IMPORT_OT_emd,
+    IMPORT_OT_esk,
     IMPORT_OT_cam_ean,
     IMPORT_OT_ean,
     EXPORT_OT_emd,
+    EXPORT_OT_esk,
     EXPORT_OT_ean,
     EXPORT_OT_cam_ean,
     CameraEANProperties,

@@ -1,7 +1,8 @@
+import contextlib
 import math
 import secrets
 import struct
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 
 import bpy
 
@@ -22,18 +23,6 @@ def _collect_frames_from_action(action: bpy.types.Action, data_paths: Sequence[s
     return frames
 
 
-def _eval_vec(
-    action: bpy.types.Action, data_path: str, frame: int, default=(0.0, 0.0, 0.0)
-) -> tuple[float, float, float]:
-    if action is None:
-        return default
-    values = []
-    for idx in range(3):
-        fcurve = action.fcurves.find(data_path, index=idx)
-        values.append(fcurve.evaluate(frame) if fcurve else default[idx])
-    return tuple(values)  # type: ignore
-
-
 def _eval_scalar(
     action: bpy.types.Action, data_path: str, frame: int, default: float = 0.0
 ) -> float:
@@ -41,16 +30,6 @@ def _eval_scalar(
         return default
     fcurve = action.fcurves.find(data_path)
     return fcurve.evaluate(frame) if fcurve else default
-
-
-def _build_keyframes_from_frames(
-    frames: Iterable[int], sampler
-) -> list[tuple[int, float, float, float, float]]:
-    keyframes: list[tuple[int, float, float, float, float]] = []
-    for frame in sorted(set(frames)):
-        x, y, z, w = sampler(frame)
-        keyframes.append((frame, x, y, z, w))
-    return keyframes
 
 
 def _calc_edge_frames(
@@ -250,11 +229,16 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
     name_offsets: list[int] = []
     names_blob = bytearray()
 
+    scene = bpy.context.scene
+    depsgraph = bpy.context.view_layer.depsgraph
+    original_frame = scene.frame_current
+
     for base in base_names:
         cam_action = bpy.data.actions.get(f"Node_{base}")
         target_action = bpy.data.actions.get(f"Target_{base}")
         data_action = bpy.data.actions.get(f"Node_{base}_data")
 
+        # Collect frames from the source actions
         frames = set()
         frames.update(_collect_frames_from_action(cam_action, ("location",)))
         frames.update(_collect_frames_from_action(target_action, ("location",)))
@@ -264,15 +248,63 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
         frame_count = max(frames) + 1
         use_16bit_indices = frame_count > 255
 
+        # Temporarily assign actions so we can sample evaluated transforms (visual keying) without baking.
+        cam_anim_data = cam_obj.animation_data or cam_obj.animation_data_create()
+        orig_cam_action = cam_anim_data.action
+        cam_anim_data.action = cam_action
+
+        target_anim_created = False
+        target_anim_data = target_obj.animation_data if target_obj else None
+        orig_target_action = target_anim_data.action if target_anim_data else None
+        if target_obj:
+            if target_obj.animation_data is None:
+                target_obj.animation_data_create()
+                target_anim_created = True
+            target_obj.animation_data.action = target_action
+
+        data_anim_created = False
+        data_anim_data = (
+            cam_obj.data.animation_data if hasattr(cam_obj.data, "animation_data") else None
+        )
+        orig_data_action = data_anim_data.action if data_anim_data else None
+        if data_action:
+            if cam_obj.data.animation_data is None:
+                cam_obj.data.animation_data_create()
+                data_anim_created = True
+            cam_obj.data.animation_data.action = data_action
+
         components: list[dict] = []
 
-        pos_keyframes = _build_keyframes_from_frames(
-            frames,
-            lambda f: (
-                *_map_vec_to_xv2(*_eval_vec(cam_action, "location", f, cam_obj.location)),
-                1.0,
-            ),
-        )
+        pos_keyframes: list[tuple[int, float, float, float, float]] = []
+        scale_keyframes: list[tuple[int, float, float, float, float]] = []
+        target_keyframes: list[tuple[int, float, float, float, float]] = []
+
+        for frame in sorted(frames):
+            scene.frame_set(frame)
+            with contextlib.suppress(Exception):
+                bpy.context.view_layer.update()
+
+            cam_eval = cam_obj.evaluated_get(depsgraph)
+            cam_loc = cam_eval.matrix_world.translation
+            pos_keyframes.append((frame, *_map_vec_to_xv2(cam_loc.x, cam_loc.y, cam_loc.z), 1.0))
+
+            roll_val = _eval_scalar(
+                data_action, "xv2_roll", frame, getattr(cam_obj.data, "xv2_roll", 0.0)
+            )
+            fov_val = _eval_scalar(
+                data_action, "xv2_fov", frame, getattr(cam_obj.data, "xv2_fov", 40.0)
+            )
+            scale_keyframes.append(
+                (frame, -math.radians(roll_val), math.radians(fov_val), 0.0, 0.0)
+            )
+
+            if target_obj:
+                targ_eval = target_obj.evaluated_get(depsgraph)
+                targ_loc = targ_eval.matrix_world.translation
+                target_keyframes.append(
+                    (frame, *_map_vec_to_xv2(targ_loc.x, targ_loc.y, targ_loc.z), 1.0)
+                )
+
         pos_keyframes = _calc_edge_frames(pos_keyframes, frame_count)
         components.append(
             {
@@ -283,19 +315,6 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
             }
         )
 
-        scale_keyframes = _build_keyframes_from_frames(
-            frames,
-            lambda f: (
-                -math.radians(
-                    _eval_scalar(data_action, "xv2_roll", f, getattr(cam_obj.data, "xv2_roll", 0.0))
-                ),
-                math.radians(
-                    _eval_scalar(data_action, "xv2_fov", f, getattr(cam_obj.data, "xv2_fov", 40.0))
-                ),
-                0.0,
-                0.0,
-            ),
-        )
         scale_keyframes = _calc_edge_frames(scale_keyframes, frame_count)
         components.append(
             {
@@ -306,14 +325,7 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
             }
         )
 
-        if target_obj:
-            target_keyframes = _build_keyframes_from_frames(
-                frames,
-                lambda f: (
-                    *_map_vec_to_xv2(*_eval_vec(target_action, "location", f, target_obj.location)),
-                    1.0,
-                ),
-            )
+        if target_obj and target_keyframes:
             target_keyframes = _calc_edge_frames(target_keyframes, frame_count)
             components.append(
                 {
@@ -323,6 +335,19 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
                     "keyframes": target_keyframes,
                 }
             )
+
+        # Restore actions and frame to avoid baking/persisting changes.
+        cam_anim_data.action = orig_cam_action
+        if target_obj and target_obj.animation_data:
+            target_obj.animation_data.action = orig_target_action
+            if target_anim_created and target_obj.animation_data is not None:
+                # clear if we created it solely for sampling
+                target_obj.animation_data.action = None
+        if data_action and cam_obj.data.animation_data:
+            cam_obj.data.animation_data.action = orig_data_action
+            if data_anim_created and cam_obj.data.animation_data is not None:
+                cam_obj.data.animation_data.action = None
+        scene.frame_set(original_frame)
 
         anim_bytes = _pack_animation(components, frame_count, use_16bit_indices=use_16bit_indices)
         animations_bytes.append(anim_bytes)
