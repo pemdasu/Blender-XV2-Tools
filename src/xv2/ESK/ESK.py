@@ -31,6 +31,12 @@ class ESK_Bone:
 class ESK_File:
     def __init__(self):
         self.bones: list[ESK_Bone] = []
+        self.version: int = 37568
+        self.i_10: int = 0
+        self.i_12: int = 0
+        self.i_24: int = 0
+        self.skeleton_flag: int = 0
+        self.skeleton_id: int = 0
 
 
 def parse_esk(path: str) -> ESK_File:
@@ -42,19 +48,22 @@ def parse_esk(path: str) -> ESK_File:
 
     esk = ESK_File()
 
-    version = struct.unpack_from("<H", data, 8)[0]
-    _ = version  # version currently unused
+    esk.version = struct.unpack_from("<H", data, 8)[0]
+    esk.i_10 = struct.unpack_from("<H", data, 10)[0]
+    esk.i_12 = struct.unpack_from("<I", data, 12)[0]
     skeleton_offset = struct.unpack_from("<I", data, 16)[0]
+    esk.i_24 = struct.unpack_from("<I", data, 24)[0]
     offs = skeleton_offset
 
     bone_count = struct.unpack_from("<h", data, offs + 0)[0]
-    _ = struct.unpack_from("<h", data, offs + 2)[0]
+    esk.skeleton_flag = struct.unpack_from("<h", data, offs + 2)[0]
     bone_index_table_offset = struct.unpack_from("<I", data, offs + 4)[0] + offs
     name_table_offset = struct.unpack_from("<I", data, offs + 8)[0] + offs
     relative_transform_offset = struct.unpack_from("<I", data, offs + 12)[0] + offs
     absolute_matrix_offset = struct.unpack_from("<I", data, offs + 16)[0]
     if absolute_matrix_offset:
         absolute_matrix_offset += offs
+    esk.skeleton_id = struct.unpack_from("<Q", data, offs + 28)[0]
 
     for bone_index in range(bone_count):
         bone_index_offset = bone_index_table_offset + 8 * bone_index
