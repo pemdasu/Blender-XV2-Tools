@@ -2,10 +2,12 @@ import contextlib
 import secrets
 import struct
 from collections import defaultdict
+from pathlib import Path
 
 import bpy
 import mathutils
 
+from ...utils import read_cstring
 from ..ESK.ESK import ESK_Bone, ESK_File
 from .EAN import ComponentType
 
@@ -131,6 +133,92 @@ def _collect_actions(bone_names: set[str]) -> list[bpy.types.Action]:
     return actions
 
 
+def _load_source_ean_template(path_value: object) -> dict[str, object] | None:
+    try:
+        source_path = str(path_value or "").strip()
+        if not source_path:
+            return None
+        source_file = Path(source_path)
+        if not source_file.is_file():
+            return None
+
+        data = source_file.read_bytes()
+        if len(data) < 32 or data[0:4] != b"#EAN":
+            return None
+
+        version = struct.unpack_from("<I", data, 8)[0]
+        i17 = int(data[17])
+        animation_count = struct.unpack_from("<H", data, 18)[0]
+        skeleton_offset = struct.unpack_from("<I", data, 20)[0]
+        animation_table_offset = struct.unpack_from("<I", data, 24)[0]
+        if skeleton_offset <= 0 or animation_table_offset <= skeleton_offset:
+            return None
+        if animation_table_offset > len(data):
+            return None
+
+        bone_count = struct.unpack_from("<h", data, skeleton_offset + 0)[0]
+        name_table_offset = struct.unpack_from("<I", data, skeleton_offset + 8)[0] + skeleton_offset
+        if bone_count < 0 or name_table_offset <= 0:
+            return None
+        if name_table_offset + bone_count * 4 > len(data):
+            return None
+
+        source_esk = ESK_File()
+        source_rest_locals: dict[str, mathutils.Matrix] = {}
+        index_table_offset = struct.unpack_from("<I", data, skeleton_offset + 4)[0] + skeleton_offset
+        skinning_table_offset = struct.unpack_from("<I", data, skeleton_offset + 12)[0] + skeleton_offset
+        for bone_index in range(bone_count):
+            bone_index_offset = index_table_offset + 8 * bone_index
+            parent_idx = struct.unpack_from("<h", data, bone_index_offset + 0)[0]
+            child_idx = struct.unpack_from("<h", data, bone_index_offset + 2)[0]
+            sibling_idx = struct.unpack_from("<h", data, bone_index_offset + 4)[0]
+            name_rel = struct.unpack_from("<I", data, name_table_offset + 4 * bone_index)[0]
+            name_off = skeleton_offset + name_rel
+            if not (0 <= name_off < len(data)):
+                return None
+            bone_name = read_cstring(data, name_off)
+
+            t_off = skinning_table_offset + 48 * bone_index
+            px, py, pz, pw, rx, ry, rz, rw, sx, sy, sz, sw = struct.unpack_from("<12f", data, t_off)
+            pos = mathutils.Vector((px, py, pz)) * pw
+            rot = mathutils.Quaternion((rw, rx, ry, rz))
+            scl = mathutils.Vector((sx, sy, sz)) * sw
+            local_mat = mathutils.Matrix.LocRotScale(pos, rot, scl)
+            source_rest_locals[bone_name] = local_mat.copy()
+            source_esk.bones.append(
+                ESK_Bone(
+                    bone_name,
+                    bone_index,
+                    local_mat,
+                    parent_idx,
+                    child_idx,
+                    sibling_idx,
+                )
+            )
+
+        float_size = 1
+        if animation_count > 0:
+            for anim_idx in range(animation_count):
+                anim_ptr = struct.unpack_from("<I", data, animation_table_offset + 4 * anim_idx)[0]
+                if anim_ptr <= 0 or anim_ptr + 4 > len(data):
+                    continue
+                source_float_size = int(data[anim_ptr + 3])
+                if source_float_size in (1, 2):
+                    float_size = source_float_size
+                break
+
+        return {
+            "version": version,
+            "i17": i17,
+            "skeleton_bytes": data[skeleton_offset:animation_table_offset],
+            "float_size": float_size,
+            "esk": source_esk,
+            "rest_locals": source_rest_locals,
+        }
+    except Exception:
+        return None
+
+
 def _parse_anim_meta(action_name: str, fallback_idx: int) -> tuple[int, str]:
     parts = action_name.split("|")
     anim_idx = fallback_idx
@@ -201,6 +289,47 @@ def _pack_half(val: float) -> bytes:
     return struct.pack("<e", val)
 
 
+def _patch_skeleton_rest_transforms(
+    skeleton_bytes: bytes,
+    rest_locals: dict[str, mathutils.Matrix],
+) -> bytes:
+    try:
+        data = bytearray(skeleton_bytes)
+        if len(data) < 36:
+            return skeleton_bytes
+
+        bone_count = struct.unpack_from("<h", data, 0)[0]
+        name_rel = struct.unpack_from("<I", data, 8)[0]
+        skin_rel = struct.unpack_from("<I", data, 12)[0]
+        if bone_count <= 0:
+            return skeleton_bytes
+        if name_rel <= 0 or skin_rel <= 0:
+            return skeleton_bytes
+        if name_rel + bone_count * 4 > len(data):
+            return skeleton_bytes
+        if skin_rel + bone_count * 48 > len(data):
+            return skeleton_bytes
+
+        for bone_index in range(bone_count):
+            name_off_rel = struct.unpack_from("<I", data, name_rel + 4 * bone_index)[0]
+            if not (0 <= name_off_rel < len(data)):
+                continue
+            bone_name = read_cstring(data, name_off_rel)
+            local_mat = rest_locals.get(bone_name)
+            if local_mat is None:
+                continue
+
+            loc, rot, scale = local_mat.decompose()
+            t_off = skin_rel + 48 * bone_index
+            struct.pack_into("<4f", data, t_off + 0, loc.x, loc.y, loc.z, 1.0)
+            struct.pack_into("<4f", data, t_off + 16, rot.x, rot.y, rot.z, rot.w)
+            struct.pack_into("<4f", data, t_off + 32, scale.x, scale.y, scale.z, 1.0)
+
+        return bytes(data)
+    except Exception:
+        return skeleton_bytes
+
+
 def _build_animation_bytes(
     action: bpy.types.Action,
     arm_obj: bpy.types.Object,
@@ -208,7 +337,8 @@ def _build_animation_bytes(
     rest_locals: dict[str, mathutils.Matrix],
     depsgraph: bpy.types.Depsgraph,
     add_dummy_rest: bool = False,
-) -> tuple[bytes, int]:
+    float_size: int = 1,
+) -> bytes:
     scene = bpy.context.scene
     original_frame = scene.frame_current
     original_action = arm_obj.animation_data.action if arm_obj.animation_data else None
@@ -255,11 +385,11 @@ def _build_animation_bytes(
         scene.frame_set(original_frame)
         if arm_obj.animation_data:
             arm_obj.animation_data.action = original_action
-        return b"", 0
+        return b""
 
     frame_count = max(global_frames) + 1
     index_size = 1 if frame_count > 255 else 0
-    float_size = 2  # 32-bit floats
+    float_size = 2 if int(float_size) == 2 else 1
 
     # Map frames to bones to minimize frame_set calls.
     frames_to_bones: dict[int, list[str]] = defaultdict(list)
@@ -363,7 +493,7 @@ def _build_animation_bytes(
     scene.frame_set(original_frame)
 
     if not nodes:
-        return b"", 0
+        return b""
 
     anim = bytearray()
     anim.extend(b"\x00\x00")
@@ -427,7 +557,7 @@ def _build_animation_bytes(
     scene.frame_set(original_frame)
     if arm_obj.animation_data:
         arm_obj.animation_data.action = original_action
-    return bytes(anim), frame_count
+    return bytes(anim)
 
 
 def export_ean(
@@ -441,6 +571,32 @@ def export_ean(
 
     try:
         esk, skeleton_bytes, rest_locals = _build_skeleton_from_armature(arm_obj)
+        try:
+            header_version = int(arm_obj.get("ean_i08", 37505))
+        except Exception:
+            header_version = 37505
+        try:
+            header_i17 = int(arm_obj.get("ean_i17", 4))
+        except Exception:
+            header_i17 = 4
+        preferred_float_size = 1
+        source_template = _load_source_ean_template(arm_obj.get("ean_source"))
+        if source_template:
+            template_skeleton = source_template.get("skeleton_bytes")
+            source_esk = source_template.get("esk")
+            source_rest_locals = source_template.get("rest_locals")
+            if isinstance(template_skeleton, (bytes, bytearray)):
+                skeleton_bytes = bytes(template_skeleton)
+            if isinstance(source_esk, ESK_File) and source_esk.bones:
+                esk = source_esk
+            if isinstance(source_rest_locals, dict):
+                merged_rest_locals = dict(source_rest_locals)
+                merged_rest_locals.update(rest_locals)
+                rest_locals = merged_rest_locals
+            skeleton_bytes = _patch_skeleton_rest_transforms(skeleton_bytes, rest_locals)
+            header_version = int(source_template.get("version", header_version))
+            header_i17 = int(source_template.get("i17", header_i17))
+            preferred_float_size = int(source_template.get("float_size", preferred_float_size))
         actual_bone_names = {b.name for b in esk.bones if b.index != 0}
 
         collected_actions = _collect_actions(actual_bone_names)
@@ -453,6 +609,9 @@ def export_ean(
             return False, (
                 f"Actions must be named '<prefix>|<index>|<label>' (e.g. {example_name})."
             )
+        armature_prefixed_actions = [a for a in actions if a.name.startswith(f"{arm_obj.name}|")]
+        if armature_prefixed_actions:
+            actions = armature_prefixed_actions
 
         if arm_obj.animation_data is None:
             arm_obj.animation_data_create()
@@ -469,13 +628,14 @@ def export_ean(
             with contextlib.suppress(Exception):
                 bpy.context.view_layer.update()
 
-            anim_bytes, _ = _build_animation_bytes(
+            anim_bytes = _build_animation_bytes(
                 act,
                 arm_obj,
                 esk,
                 rest_locals,
                 bpy.context.view_layer.depsgraph,
                 add_dummy_rest=add_dummy_rest,
+                float_size=preferred_float_size,
             )
             if not anim_bytes:
                 continue
@@ -491,10 +651,10 @@ def export_ean(
         animation_count = max_index + 1
 
         out = bytearray([35, 69, 65, 78, 254, 255, 32, 0])
-        out.extend(struct.pack("<I", 37568))
+        out.extend(struct.pack("<I", header_version))
         out.extend(b"\x00\x00\x00\x00")
         out.append(0)  # is_camera
-        out.append(4)
+        out.append(header_i17 & 0xFF)
         out.extend(struct.pack("<H", animation_count))
         out.extend(b"\x00" * 12)
 

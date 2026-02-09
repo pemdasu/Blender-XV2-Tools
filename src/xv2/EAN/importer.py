@@ -59,11 +59,10 @@ def _create_skeleton_matrices(esk) -> None:
 
 def _build_rest_from_esk(
     esk,
-) -> tuple[dict[str, mathutils.Matrix], dict[str, mathutils.Matrix], dict[str, str | None]]:
+) -> tuple[dict[str, mathutils.Matrix], dict[str, mathutils.Matrix]]:
     _create_skeleton_matrices(esk)
     abs_mats: dict[str, mathutils.Matrix] = {}
     local_mats: dict[str, mathutils.Matrix] = {}
-    parents: dict[str, str | None] = {}
 
     def compute_abs(bone) -> mathutils.Matrix:
         if bone.name in abs_mats:
@@ -75,37 +74,26 @@ def _build_rest_from_esk(
             parent = esk.bones[bone.parent_index]
             parent_abs = compute_abs(parent)
             abs_mats[bone.name] = parent_abs @ mat_local
-            parents[bone.name] = parent.name
         else:
             abs_mats[bone.name] = mat_local
-            parents[bone.name] = None
         local_mats[bone.name] = mat_local
         return abs_mats[bone.name]
 
     for b in esk.bones:
         compute_abs(b)
 
-    return abs_mats, local_mats, parents
+    return abs_mats, local_mats
 
 
 def _get_rest_matrices(
     ean: EANFile,
     target_armature: bpy.types.Object | None,
-    source_path: str,
     transform_ref: bpy.types.Object | None = None,
 ) -> tuple[
     bpy.types.Object | None,
-    dict[str, mathutils.Matrix],  # target abs
-    dict[str, mathutils.Matrix],  # ean abs
     dict[str, mathutils.Matrix],  # ean local
-    dict[str, str | None],  # ean parents
 ]:
-    ean_abs, ean_local, ean_parents = _build_rest_from_esk(ean.skeleton)
-    target_abs: dict[str, mathutils.Matrix] = {}
-
-    def _collect(bones: bpy.types.ArmatureBones):
-        for b in bones:
-            target_abs[b.name] = b.matrix_local.copy()
+    _, ean_local = _build_rest_from_esk(ean.skeleton)
 
     armature_obj = (
         target_armature if target_armature and target_armature.type == "ARMATURE" else None
@@ -126,13 +114,11 @@ def _get_rest_matrices(
                 armature_obj.rotation_euler[0] = math.radians(90.0)
             if armature_obj.data:
                 armature_obj.data.display_type = "STICK"
-            armature_obj["ean_source"] = os.path.abspath(source_path)
 
     if armature_obj is None:
-        return None, target_abs, ean_abs, ean_local, ean_parents
+        return None, ean_local
 
-    _collect(armature_obj.data.bones)
-    return armature_obj, target_abs, ean_abs, ean_local, ean_parents
+    return armature_obj, ean_local
 
 
 def _interp_component(
@@ -389,16 +375,9 @@ def import_ean_animations(
     old_arm = target_armature if replace_armature else None
     ean_arm_name = ean.skeleton.bones[0].name if ean.skeleton and ean.skeleton.bones else "Armature"
 
-    (
-        arm_obj,
-        _target_abs,
-        _ean_abs,
-        ean_local,
-        _ean_parents,
-    ) = _get_rest_matrices(
+    arm_obj, ean_local = _get_rest_matrices(
         ean,
         None if replace_armature else target_armature,
-        path,
         transform_ref=target_armature if replace_armature else None,
     )
     if arm_obj is None:
@@ -422,6 +401,10 @@ def import_ean_animations(
         if arm_data and arm_data.users == 0:
             with contextlib.suppress(Exception):
                 bpy.data.armatures.remove(arm_data, do_unlink=True)
+
+    arm_obj["ean_source"] = os.path.abspath(path)
+    arm_obj["ean_i08"] = int(ean.i_08)
+    arm_obj["ean_i17"] = int(ean.i_17)
 
     action_prefix = arm_obj.name or ean_arm_name
     for anim in sorted(ean.animations, key=lambda a: a.index):
