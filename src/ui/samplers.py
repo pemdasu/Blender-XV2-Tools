@@ -182,7 +182,7 @@ class VIEW3D_PT_emd_texture_samplers(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        container, counterpart = get_sampler_container(context)
+        container, _ = get_sampler_container(context)
 
         if container is None:
             layout.label(text="No sampler data available.")

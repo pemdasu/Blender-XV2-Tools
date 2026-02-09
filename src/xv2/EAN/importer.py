@@ -391,10 +391,10 @@ def import_ean_animations(
 
     (
         arm_obj,
-        target_abs,
-        ean_abs,
+        _target_abs,
+        _ean_abs,
         ean_local,
-        ean_parents,
+        _ean_parents,
     ) = _get_rest_matrices(
         ean,
         None if replace_armature else target_armature,

@@ -82,7 +82,6 @@ def _collect_vertex_data_for_material(
     arm_obj: bpy.types.Object,
     mesh: bpy.types.Mesh,
     material_index: int | None,
-    palette_seed: list[str] | None = None,  # not used for now
 ) -> tuple[list[EMD_Vertex], list[EMD_Triangles]]:
     mesh.calc_loop_triangles()
     with contextlib.suppress(Exception):
@@ -271,21 +270,8 @@ def _build_submeshes_from_object(
             if mat_index is not None and mat_index < len(mesh.materials)
             else None
         )
-        palette_seed = None
-        if mat and "emd_bone_palette" in mat:
-            seed = mat["emd_bone_palette"]
-            if isinstance(seed, (list, tuple)):
-                palette_seed = list(seed)
-            elif isinstance(seed, dict):
-                palette_seed = list(seed.values())
 
-        vertices, triangle_groups = _collect_vertex_data_for_material(
-            obj,
-            arm_obj,
-            mesh,
-            mat_index,
-            palette_seed,
-        )
+        vertices, triangle_groups = _collect_vertex_data_for_material(obj, arm_obj, mesh, mat_index)
         if not triangle_groups:
             continue
 

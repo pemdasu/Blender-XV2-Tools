@@ -114,7 +114,7 @@ def _build_skeleton_from_armature(
     return esk, skeleton_bytes, rest_locals
 
 
-def _collect_actions(arm_obj: bpy.types.Object, bone_names: set[str]) -> list[bpy.types.Action]:
+def _collect_actions(bone_names: set[str]) -> list[bpy.types.Action]:
     actions: list[bpy.types.Action] = []
     seen = set()
     for act in bpy.data.actions:
@@ -443,7 +443,7 @@ def export_ean(
         esk, skeleton_bytes, rest_locals = _build_skeleton_from_armature(arm_obj)
         actual_bone_names = {b.name for b in esk.bones if b.index != 0}
 
-        collected_actions = _collect_actions(arm_obj, actual_bone_names)
+        collected_actions = _collect_actions(actual_bone_names)
         actions = [act for act in collected_actions if _is_character_action_name(act.name)]
         if not collected_actions:
             return False, f"No actions with pose bone keyframes found on armature {arm_obj.name}."
@@ -469,7 +469,7 @@ def export_ean(
             with contextlib.suppress(Exception):
                 bpy.context.view_layer.update()
 
-            anim_bytes, frame_count = _build_animation_bytes(
+            anim_bytes, _ = _build_animation_bytes(
                 act,
                 arm_obj,
                 esk,
