@@ -2,8 +2,7 @@ from .EMB import (
     EMBEntry,
     EMBFile,
     _extract_dyt_lines,
-    attach_emb_textures_to_material,
-    emb_prefix_from_path,
+    emb_stem_from_path,
     load_emb_image,
     locate_emb_files,
     read_emb,
@@ -12,10 +11,9 @@ from .EMB import (
 __all__ = [
     "EMBEntry",
     "EMBFile",
-    "emb_prefix_from_path",
+    "emb_stem_from_path",
     "read_emb",
     "load_emb_image",
-    "attach_emb_textures_to_material",
     "locate_emb_files",
     "_extract_dyt_lines",
 ]

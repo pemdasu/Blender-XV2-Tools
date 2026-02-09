@@ -6,7 +6,6 @@ import bpy
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
-    FloatProperty,
     IntProperty,
     StringProperty,
 )
@@ -65,15 +64,6 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         name="Import tangents (if present)",
         default=False,
     )
-    merge_by_distance: BoolProperty(  # type: ignore
-        name="Auto merge by distance",
-        default=True,
-    )
-    merge_distance: FloatProperty(  # type: ignore
-        name="Merge Distance",
-        default=0.0001,
-        min=0.0,
-    )
     tris_to_quads: BoolProperty(  # type: ignore
         name="Convert tris to quads",
         default=False,
@@ -85,6 +75,12 @@ class IMPORT_OT_emd(Operator, ImportHelper):
     preserve_structure: BoolProperty(  # type: ignore
         name="Preserve EMD hierarchy (empties)",
         default=False,
+    )
+    dyt_entry_index: IntProperty(  # type: ignore
+        name="DYT Entry Index",
+        description="DYT texture entry to use (e.g. 2 -> DATA002)",
+        default=0,
+        min=0,
     )
     esk_path: StringProperty(  # type: ignore
         name="ESK File",
@@ -99,9 +95,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         layout.prop(self, "auto_detect_esk")
         layout.prop(self, "import_custom_normals")
         layout.prop(self, "import_tangents")
-        layout.prop(self, "merge_by_distance")
-        if self.merge_by_distance:
-            layout.prop(self, "merge_distance")
+        layout.prop(self, "dyt_entry_index")
         layout.prop(self, "tris_to_quads")
         if not self.auto_detect_esk:
             layout.label(text="Tip: select an .esk in the file browser.")
@@ -141,18 +135,20 @@ class IMPORT_OT_emd(Operator, ImportHelper):
             scd_file = is_scd_path(path)
             shared = None if scd_file else main_arm_obj
 
-            arm_obj, esk = import_emd(
+            arm_obj, _ = import_emd(
                 path,
                 esk_path,
                 self.import_custom_normals,
                 self.import_tangents,
-                self.merge_by_distance,
-                self.merge_distance,
+                True,  # Merge by Distance
+                0.0001,  # Merge Distance
                 self.tris_to_quads,
                 self.split_into_submeshes,
                 shared_armature=shared,
                 return_armature=True,
                 preserve_structure=self.preserve_structure,
+                dyt_entry_index=self.dyt_entry_index,
+                warn=lambda msg: self.report({"WARNING"}, msg),
             )
 
             if not scd_file and main_arm_obj is None:

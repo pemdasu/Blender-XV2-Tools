@@ -1,6 +1,7 @@
 import contextlib
 import math
 import os
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 
@@ -11,8 +12,7 @@ from ...ui import sampler_defs_to_collection
 from ...utils import remove_unused_vertex_groups
 from ..EMB import (
     _extract_dyt_lines,
-    attach_emb_textures_to_material,
-    emb_prefix_from_path,
+    emb_stem_from_path,
     load_emb_image,
     locate_emb_files,
 )
@@ -235,6 +235,7 @@ def _image_from_sampler(
     sampler_defs,
     sampler_index: int,
     emb_main,
+    warn: Callable[[str], None] | None = None,
 ) -> bpy.types.Image | None:
     if not sampler_defs or emb_main is None:
         return None
@@ -244,7 +245,19 @@ def _image_from_sampler(
     if tex_index < 0 or tex_index >= len(emb_main.entries):
         return None
     entry = emb_main.entries[tex_index]
-    return load_emb_image(entry, emb_main.path, emb_prefix_from_path(emb_main.path))
+    entry_name = (entry.name or "").lower()
+    if entry_name.endswith(".dyt") or ".dyt." in entry_name:
+        if warn:
+            warn(
+                f"Skipping DYT source texture '{entry.name or f'DATA{entry.index:03d}.dds'}' "
+                f"from '{os.path.basename(emb_main.path)}'."
+            )
+        return None
+    return load_emb_image(
+        entry,
+        emb_main.path,
+        warn=warn,
+    )
 
 
 def _apply_shader_material(
@@ -253,9 +266,17 @@ def _apply_shader_material(
     emb_main,
     emb_dyt,
     emm_info,
+    dyt_entry_index: int = 0,
+    warn: Callable[[str], None] | None = None,
 ) -> None:
     if not mat or not mat.node_tree:
         return
+
+    def _remove_image(image: bpy.types.Image | None) -> None:
+        if image is None:
+            return
+        with contextlib.suppress(Exception):
+            bpy.data.images.remove(image, do_unlink=True)
 
     nodes = mat.node_tree.nodes
 
@@ -266,8 +287,8 @@ def _apply_shader_material(
     dual_toggle = nodes.get("XV2_DUAL_EMB_TOGGLE")
     msk_toggle = nodes.get("XV2_MSK_EMB_TOGGLE")
 
-    main_img = _image_from_sampler(sampler_defs, 0, emb_main)
-    dual_img = _image_from_sampler(sampler_defs, 2, emb_main)
+    main_img = _image_from_sampler(sampler_defs, 0, emb_main, warn=warn)
+    dual_img = _image_from_sampler(sampler_defs, 2, emb_main, warn=warn)
 
     def _configure_image(tex_node: bpy.types.Node, img: bpy.types.Image, is_dyt: bool) -> None:
         tex_node.image = img
@@ -308,35 +329,61 @@ def _apply_shader_material(
         with contextlib.suppress(Exception):
             mat_scale = int(round(float(mat.get("emm_param_MatScale1X", 0))))
 
-    if emb_dyt and emb_dyt.entries:
-        dyt_entry = emb_dyt.entries[0]
-        base_name = os.path.splitext(dyt_entry.name or f"DATA{dyt_entry.index:03d}.dds")[0]
-        dyt_image = load_emb_image(
-            dyt_entry,
-            emb_dyt.path,
-            emb_prefix_from_path(emb_dyt.path),
-            base_override=f"{base_name}.dyt.dds",
-        )
-        if dyt_image:
-            block_idx = max(0, mat_scale)
-            lines = _extract_dyt_lines(
-                dyt_image, f"DYT_{block_idx}", block_index=block_idx, material_name=mat.name
-            )
-            primary = lines.get("primary") or next(iter(lines.values()), None)
-            rim = lines.get("rim")
-            spec = lines.get("spec")
-            secondary = lines.get("secondary")
+    if emb_dyt:
+        dyt_entries = emb_dyt.entries or []
+        requested_idx = max(0, int(dyt_entry_index))
+        selected_idx = requested_idx
+        emb_name = os.path.basename(emb_dyt.path) or "dyt.emb"
 
-            assign_map = {
-                "XV2_DYT_MAIN": primary,
-                "XV2_DYT_RIM": rim,
-                "XV2_DYT_SPEC": spec,
-                "XV2_DYT_DUAL": secondary,
-            }
-            for node_name, img_obj in assign_map.items():
-                node = nodes.get(node_name)
-                if node and img_obj:
-                    _configure_image(node, img_obj, is_dyt=True)
+        if selected_idx >= len(dyt_entries):
+            if warn and requested_idx != 0:
+                warn(
+                    f"DYT entry DATA{selected_idx:03d} was not found in '{emb_name}'. "
+                    "Falling back to DATA000."
+                )
+            selected_idx = 0
+
+        if selected_idx >= len(dyt_entries):
+            if warn:
+                warn(f"DYT entry DATA000 was not found in '{emb_name}'. Skipping DYT import.")
+            dyt_entry = None
+        else:
+            dyt_entry = dyt_entries[selected_idx]
+
+        if dyt_entry is not None:
+            base_name = os.path.splitext(dyt_entry.name or f"DATA{dyt_entry.index:03d}.dds")[0]
+            dyt_image = load_emb_image(
+                dyt_entry,
+                emb_dyt.path,
+                base_override=f"{base_name}.dyt.dds",
+                warn=warn,
+            )
+            if dyt_image:
+                block_idx = max(0, mat_scale)
+                lines = _extract_dyt_lines(
+                    dyt_image,
+                    f"{emb_stem_from_path(emb_dyt.path)}_toon",
+                    block_index=block_idx,
+                    source_token=str(dyt_image.get("emb_source_token", "")),
+                )
+                primary = lines.get("p") or next(iter(lines.values()), None)
+                rim = lines.get("r")
+                spec = lines.get("s")
+                secondary = lines.get("d")
+
+                assign_map = {
+                    "XV2_DYT_MAIN": primary,
+                    "XV2_DYT_RIM": rim,
+                    "XV2_DYT_SPEC": spec,
+                    "XV2_DYT_DUAL": secondary,
+                }
+                for node_name, img_obj in assign_map.items():
+                    node = nodes.get(node_name)
+                    if node and img_obj:
+                        _configure_image(node, img_obj, is_dyt=True)
+
+                # Keep only extracted DYT line images in the blend file.
+                _remove_image(dyt_image)
 
     def _apply_params_to_group(group_name: str) -> None:
         group_node = nodes.get(group_name)
@@ -369,7 +416,20 @@ def import_emd(
     shared_armature=None,
     return_armature: bool = False,
     preserve_structure: bool = False,
+    dyt_entry_index: int = 0,
+    warn: Callable[[str], None] | None = None,
 ):
+    warned_messages: set[str] = set()
+
+    def _warn_once(message: str) -> None:
+        if not message or message in warned_messages:
+            return
+        warned_messages.add(message)
+        if warn:
+            warn(message)
+        else:
+            print("Warning:", message)
+
     emd: EMD_File = parse_emd(path)
     emb_main, emb_dyt = locate_emb_files(path)
     emm_path = locate_emm(path)
@@ -408,6 +468,13 @@ def import_emd(
             if not arm_obj:
                 arm_obj = build_armature(esk, arm_name)
             arm_obj.name = arm_name
+            arm_obj["esk_source_path"] = esk_path
+            arm_obj["esk_version"] = int(esk.version)
+            arm_obj["esk_i10"] = int(esk.i_10)
+            arm_obj["esk_i12"] = int(esk.i_12)
+            arm_obj["esk_i24"] = int(esk.i_24)
+            arm_obj["esk_skeleton_flag"] = int(esk.skeleton_flag)
+            arm_obj["esk_skeleton_id"] = str(int(esk.skeleton_id))
             arm_obj.rotation_euler[0] = math.radians(90.0)
             if arm_obj.data:
                 arm_obj.data.display_type = "STICK"
@@ -607,7 +674,7 @@ def import_emd(
                 else:
                     me.materials.append(material)
 
-                emm_info = emm_by_name.get(sub.name.lower()) if "emm_by_name" in locals() else None
+                emm_info = emm_by_name.get(sub.name.lower())
                 if emm_info:
                     material["emm_name"] = emm_info.name
                     material["emm_shader"] = emm_info.shader
@@ -620,19 +687,18 @@ def import_emd(
                         if key not in material:
                             material[key] = p.value
                 _apply_shader_material(
-                    material, sub.texture_sampler_defs, emb_main, emb_dyt, emm_info
+                    material,
+                    sub.texture_sampler_defs,
+                    emb_main,
+                    emb_dyt,
+                    emm_info,
+                    dyt_entry_index=dyt_entry_index,
+                    warn=_warn_once,
                 )
 
                 if sub.texture_sampler_defs:
                     set_sampler_custom_properties(material, sub.texture_sampler_defs)
                     sampler_defs_to_collection(material, sub.texture_sampler_defs)
-                    if not material.get("_xv2_shader_template"):
-                        attach_emb_textures_to_material(
-                            material,
-                            sub.texture_sampler_defs,
-                            emb_main,
-                            emb_dyt,
-                        )
                 material["emd_vertex_flags"] = int(sub.vertex_flags)
                 if sub.triangle_groups and sub.triangle_groups[0].bone_names:
                     material["emd_bone_palette"] = list(sub.triangle_groups[0].bone_names)

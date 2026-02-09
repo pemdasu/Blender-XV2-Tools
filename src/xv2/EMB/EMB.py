@@ -1,14 +1,13 @@
 import contextlib
+import hashlib
 import os
 import struct
 import tempfile
+from collections.abc import Callable
 
 import bpy
 
 from ...utils import read_cstring
-from ..EMD.EMD import (
-    EMD_TextureSamplerDef,
-)
 
 DDSD_LINEARSIZE = 0x80000
 DDSD_CAPS = 0x1
@@ -70,12 +69,72 @@ class EMBFile:
 EMB_SIGNATURE = 1112360227
 
 
-def emb_prefix_from_path(path: str) -> str:
-    base = os.path.basename(path)
+def _normalize_source_path(path: str) -> str:
+    if not path:
+        return ""
+    with contextlib.suppress(Exception):
+        return os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    return path
+
+
+def _source_token(path: str) -> str:
+    normalized = _normalize_source_path(path)
+    if not normalized:
+        return "nosrc"
+    digest = hashlib.sha1(normalized.encode("utf-8", "replace")).hexdigest()
+    return digest[:10]
+
+
+def emb_stem_from_path(emb_path: str) -> str:
+    base = os.path.basename(emb_path or "")
     stem = os.path.splitext(base)[0]
     if stem.lower().endswith(".dyt"):
         stem = stem[:-4]
-    return f"{stem}_"
+    if stem.lower().endswith("_dyt"):
+        stem = stem[:-4]
+    if stem.lower().endswith("_000"):
+        stem = stem[:-4]
+    return stem
+
+
+def _image_matches_emb_entry(image: bpy.types.Image, source_token: str, entry_index: int) -> bool:
+    try:
+        image_token = str(image.get("emb_source_token", ""))
+        image_index = int(image.get("emb_entry_index", -1))
+        return image_token == source_token and image_index == int(entry_index)
+    except Exception:
+        return False
+
+
+def _build_image_name(
+    emb_path: str,
+    entry_index: int,
+    image_base: str,
+) -> str:
+    source_name = emb_stem_from_path(emb_path)
+    base_name = os.path.basename(image_base) or f"EMB_{int(entry_index):03d}.dds"
+    tex_name = os.path.splitext(base_name)[0]
+    source_prefix = f"{source_name}_"
+    if source_name and tex_name.lower().startswith(source_prefix.lower()):
+        return tex_name
+    if source_name:
+        return f"{source_name}_{tex_name}"
+    return tex_name
+
+
+def _create_image_name(clean_name: str, source_token: str, entry_index: int) -> str:
+    image_name = clean_name
+    suffix = 0
+    token_short = (source_token or "dup")[:6]
+    while True:
+        existing = bpy.data.images.get(image_name)
+        if not existing or _image_matches_emb_entry(existing, source_token, entry_index):
+            return image_name
+        suffix += 1
+        if suffix == 1:
+            image_name = f"{clean_name}_{token_short}"
+        else:
+            image_name = f"{clean_name}_{token_short}_{suffix}"
 
 
 def read_emb(path: str) -> EMBFile | None:
@@ -141,14 +200,25 @@ def read_emb(path: str) -> EMBFile | None:
 def load_emb_image(
     entry: EMBEntry,
     emb_path: str,
-    name_prefix: str = "",
     base_override: str | None = None,
+    warn: Callable[[str], None] | None = None,
 ) -> bpy.types.Image | None:
+    def _warn(message: str) -> None:
+        if not message:
+            return
+        with contextlib.suppress(Exception):
+            if warn:
+                warn(message)
+
     if not entry.data:
         return None
 
+    emb_file = os.path.basename(emb_path)
+    entry_label = entry.name or f"DATA{entry.index:03d}.dds"
+
     sig_index = entry.data.find(b"DDS ")
     if sig_index == -1:
+        _warn(f"Texture '{entry_label}' in '{emb_file}' is not a DDS texture.")
         return None
 
     dds_data = entry.data[sig_index:]
@@ -157,10 +227,16 @@ def load_emb_image(
     try:
         header_size = struct.unpack_from("<I", dds_data, 4)[0]
         if header_size != 124:
+            _warn(f"Texture '{entry_label}' in '{emb_file}' has an invalid DDS header and was skipped.")
             return None
         fourcc = dds_data[84:88]
         allowed = {b"DXT1", b"DXT3", b"DXT5", b"BC1 ", b"BC2 ", b"BC3 ", b"BC4 ", b"BC5 ", b"ATI2"}
         if fourcc and fourcc not in allowed:
+            fourcc_text = fourcc.decode("ascii", errors="replace").strip() or repr(fourcc)
+            _warn(
+                f"Texture '{entry_label}' in '{emb_file}' uses unsupported DDS format '{fourcc_text}'. "
+                "Supported: DXT1, DXT3, DXT5, BC1-BC5, ATI2."
+            )
             return None
         flags = struct.unpack_from("<I", dds_data, 8)[0]
         height = struct.unpack_from("<I", dds_data, 12)[0]
@@ -187,15 +263,28 @@ def load_emb_image(
             struct.pack_into("<I", mutable, 20, new_linearsize)
             dds_data = bytes(mutable)
     except Exception:
+        _warn(f"Texture '{entry_label}' in '{emb_file}' could not be parsed as DDS and was skipped.")
         return None
 
     image_base = base_override or (entry.name or f"EMB_{entry.index:03d}.dds")
     image_colorspace = "sRGB" if ".dyt" in image_base.lower() else "Non-Color"
-    source_tag = os.path.splitext(os.path.basename(emb_path))[0] if emb_path else "emb"
-    image_name = f"{name_prefix}{source_tag}_{image_base}"
-    existing = bpy.data.images.get(image_name)
-    if existing:
-        return _force_image_colorspace(existing, image_colorspace)
+    normalized_source = _normalize_source_path(emb_path)
+    source_token = _source_token(normalized_source)
+    clean_name = _build_image_name(
+        emb_path=emb_path,
+        entry_index=entry.index,
+        image_base=image_base,
+    )
+
+    for existing_img in bpy.data.images:
+        if _image_matches_emb_entry(existing_img, source_token, entry.index):
+            target_name = _create_image_name(clean_name, source_token, entry.index)
+            if existing_img.name != target_name:
+                with contextlib.suppress(Exception):
+                    existing_img.name = target_name
+            return _force_image_colorspace(existing_img, image_colorspace)
+
+    image_name = _create_image_name(clean_name, source_token, entry.index)
 
     temp_path = None
     try:
@@ -204,28 +293,23 @@ def load_emb_image(
             if base_override
             else (os.path.basename(entry.name) if entry.name else f"DATA{entry.index:03d}.dds")
         )
-        base_name = f"{name_prefix}{base_name}"
-        temp_path = os.path.join(os.path.dirname(emb_path) or tempfile.gettempdir(), base_name)
+        base_stem, base_ext = os.path.splitext(base_name)
+        if not base_ext:
+            base_ext = ".dds"
+        # Use a unique temp filename to prevent Blender from resolving a stale image datablock
+        # when multiple EMBs contain DATA000-style entry names.
+        temp_name = f"{source_token}_{entry.index:03d}_{base_stem}{base_ext}"
+        temp_path = os.path.join(os.path.dirname(emb_path) or tempfile.gettempdir(), temp_name)
         with open(temp_path, "wb") as tmp:
             tmp.write(dds_data)
 
-        image = None
-        try:
-            bpy.ops.image.open(
-                filepath=temp_path,
-                check_existing=False,
-                directory=os.path.dirname(temp_path),
-                files=[{"name": os.path.basename(temp_path)}],
-            )
-            image = bpy.data.images.get(os.path.basename(temp_path))
-        except Exception:
-            pass
-        if image is None:
-            image = bpy.data.images.load(temp_path, check_existing=False)
+        image = bpy.data.images.load(temp_path, check_existing=False)
 
         image.name = image_name
         image.filepath = temp_path
         image["emb_source"] = emb_path
+        image["emb_source_norm"] = normalized_source
+        image["emb_source_token"] = source_token
         image["emb_entry_index"] = entry.index
         image["emb_entry_name"] = entry.name
         image = _force_image_colorspace(image, image_colorspace)
@@ -233,6 +317,7 @@ def load_emb_image(
             image.pack()
     except Exception as error:
         print("Failed to load EMB image:", entry.name, error)
+        _warn(f"Texture '{entry_label}' in '{emb_file}' failed to load in Blender and was skipped.")
         image = None
     finally:
         # Remove the temp file after packing into Blender
@@ -244,7 +329,10 @@ def load_emb_image(
 
 
 def _extract_dyt_lines(
-    image: bpy.types.Image, base_name: str, block_index: int = 0, material_name: str | None = None
+    image: bpy.types.Image,
+    base_name: str,
+    block_index: int = 0,
+    source_token: str = "",
 ) -> dict[str, bpy.types.Image]:
     results: dict[str, bpy.types.Image] = {}
     width, height = image.size
@@ -269,15 +357,26 @@ def _extract_dyt_lines(
             buf[dst_off : dst_off + row_stride] = src_pixels[src_off : src_off + row_stride]
         return buf
 
-    labels = ["primary", "rim", "spec", "secondary"]
+    labels = ["p", "r", "s", "d"]
     start_line = max(0, block_index) * 4
+    def _create_dyt_name(preferred_name: str) -> str:
+        candidate = preferred_name
+        token_short = (source_token or "dup")[:6]
+        attempt = 0
+        while bpy.data.images.get(candidate):
+            attempt += 1
+            if attempt == 1:
+                candidate = f"{preferred_name}_{token_short}"
+            else:
+                candidate = f"{preferred_name}_{token_short}_{attempt}"
+        return candidate
+
     for idx, label in enumerate(labels):
         start_row = (start_line + idx) * line_height
         if start_row >= height:
             break
         buf = slice_rows(start_row, line_height)
-        mat_suffix = f"_{material_name}" if material_name else ""
-        new_name = f"{base_name}{mat_suffix}_{block_index}_{label}"
+        new_name = f"{base_name}_{block_index}_{label}"
         existing = bpy.data.images.get(new_name)
         if existing:
             try:
@@ -285,162 +384,31 @@ def _extract_dyt_lines(
                 has_pixels = (
                     bool(existing.has_data) and len(existing.pixels) >= width * line_height * 4
                 )
+                same_source = (
+                    not source_token or str(existing.get("emb_source_token", "")) == source_token
+                )
             except Exception:
                 valid_size = False
                 has_pixels = False
-            if valid_size and has_pixels:
+                same_source = False
+            if valid_size and has_pixels and same_source:
                 results[label] = existing
                 continue
         new_img = bpy.data.images.new(
-            new_name, width=width, height=line_height, alpha=True, float_buffer=True
+            _create_dyt_name(new_name),
+            width=width,
+            height=line_height,
+            alpha=True,
+            float_buffer=True,
         )
         new_img.pixels = buf
+        if source_token:
+            new_img["emb_source_token"] = source_token
         new_img.pack()
         new_img = _force_image_colorspace(new_img, "sRGB")
         results[label] = new_img
 
     return results
-
-
-def attach_emb_textures_to_material(
-    mat: bpy.types.Material,
-    sampler_defs: list[EMD_TextureSamplerDef],
-    emb_main: EMBFile | None,
-    emb_dyt: EMBFile | None,
-):
-    if not sampler_defs:
-        return
-
-    sources = {}
-    if emb_main:
-        sources["emb"] = emb_main.path
-    if emb_dyt:
-        sources["dyt_emb"] = emb_dyt.path
-    if sources:
-        mat["emb_sources"] = sources
-
-    main_prefix = emb_prefix_from_path(emb_main.path) if emb_main else ""
-    dyt_prefix = emb_prefix_from_path(emb_dyt.path) if emb_dyt else ""
-
-    node_tree = mat.node_tree
-    bsdf = None
-    if node_tree and node_tree.nodes:
-        bsdf = node_tree.nodes.get("Principled BSDF")
-
-    first_main_tex_node = None
-    created_nodes = []
-    for sampler in sampler_defs:
-        tex_index = int(sampler.texture_index)
-        entry = None
-        entry_dyt = None
-        if emb_main and 0 <= tex_index < len(emb_main.entries):
-            entry = emb_main.entries[tex_index]
-
-        dyt_index = 0
-        if emb_dyt and emb_dyt.entries:
-            entry_dyt = emb_dyt.entries[min(dyt_index, len(emb_dyt.entries) - 1)]
-
-        if entry and node_tree:
-            image = load_emb_image(entry, emb_main.path, main_prefix)
-            if image:
-                node_name = f"EMB_Sampler_{tex_index}"
-                tex_node = node_tree.nodes.get(node_name)
-                if tex_node is None:
-                    tex_node = node_tree.nodes.new("ShaderNodeTexImage")
-                    tex_node.name = node_name
-                    tex_node.label = f"Sampler {tex_index}"
-                    tex_node.location = (-400, 300 - 220 * tex_index)
-                tex_node.image = image
-                created_nodes.append(tex_node)
-                if first_main_tex_node is None:
-                    first_main_tex_node = tex_node
-
-        if entry_dyt and node_tree:
-            base_name = entry_dyt.name or f"DATA{entry_dyt.index:03d}.dds"
-            base_name = f"{os.path.splitext(base_name)[0]}.dyt.dds"
-            image = load_emb_image(entry_dyt, emb_dyt.path, dyt_prefix, base_override=base_name)
-            if image:
-                line_images = _extract_dyt_lines(
-                    image, f"{dyt_prefix}{os.path.splitext(base_name)[0]}"
-                )
-                if not line_images:
-                    line_images = {"dyt": image}
-
-                y_base = -200 - 220 * tex_index
-                for i, (label, img_obj) in enumerate(line_images.items()):
-                    node_name = f"EMB_DYT_{label}_{tex_index}"
-                    tex_node = node_tree.nodes.get(node_name)
-                    if tex_node is None:
-                        tex_node = node_tree.nodes.new("ShaderNodeTexImage")
-                        tex_node.name = node_name
-                        tex_node.label = f"DYT {label} {tex_index}"
-                        tex_node.location = (-400, y_base - 140 * i)
-                    tex_node.image = img_obj
-                    created_nodes.append(tex_node)
-
-    if bsdf and created_nodes:
-        tex_node = created_nodes[0]
-        if not tex_node.outputs["Color"].links:
-            node_tree.links.new(tex_node.outputs["Color"], bsdf.inputs["Base Color"])
-
-    if node_tree and first_main_tex_node:
-        output_node = None
-        for node in node_tree.nodes:
-            if node.type == "OUTPUT_MATERIAL":
-                output_node = node
-                break
-        if output_node is None:
-            output_node = node_tree.nodes.new("ShaderNodeOutputMaterial")
-            output_node.location = (400, 0)
-
-        threshold_node = node_tree.nodes.get("EMB_AlphaThreshold")
-        if threshold_node is None:
-            threshold_node = node_tree.nodes.new("ShaderNodeMath")
-            threshold_node.name = "EMB_AlphaThreshold"
-            threshold_node.label = "EMB AlphaThreshold"
-            threshold_node.operation = "LESS_THAN"
-            threshold_node.inputs[1].default_value = 0.5
-            threshold_node.location = (
-                first_main_tex_node.location.x + 200,
-                first_main_tex_node.location.y,
-            )
-
-        diffuse_node = node_tree.nodes.get("EMB_Diffuse")
-        if diffuse_node is None:
-            diffuse_node = node_tree.nodes.new("ShaderNodeBsdfDiffuse")
-            diffuse_node.name = "EMB_Diffuse"
-            diffuse_node.label = "EMB Diffuse"
-            diffuse_node.location = (threshold_node.location.x + 220, threshold_node.location.y)
-            diffuse_node.inputs["Roughness"].default_value = 0.0
-
-        tex_alpha_socket = first_main_tex_node.outputs.get("Alpha")
-        tex_color_socket = first_main_tex_node.outputs.get("Color")
-        fac_socket = threshold_node.inputs[0] if threshold_node.inputs else None
-
-        if fac_socket and tex_alpha_socket:
-            if not tex_alpha_socket.links or not any(
-                link.to_node is threshold_node for link in tex_alpha_socket.links
-            ):
-                node_tree.links.new(tex_alpha_socket, fac_socket)
-        elif (
-            fac_socket
-            and tex_color_socket
-            and (
-                not tex_color_socket.links
-                or not any(link.to_node is threshold_node for link in tex_color_socket.links)
-            )
-        ):
-            node_tree.links.new(tex_color_socket, fac_socket)
-
-        if not threshold_node.outputs["Value"].links or not any(
-            link.to_node is diffuse_node for link in threshold_node.outputs["Value"].links
-        ):
-            node_tree.links.new(threshold_node.outputs["Value"], diffuse_node.inputs["Color"])
-
-        if output_node.inputs["Surface"].links:
-            for link in list(output_node.inputs["Surface"].links):
-                node_tree.links.remove(link)
-        node_tree.links.new(diffuse_node.outputs["BSDF"], output_node.inputs["Surface"])
 
 
 def locate_emb_files(path: str) -> tuple[EMBFile | None, EMBFile | None]:
