@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.8
+
+- Fixed addon enable error caused by EAN/ESK circular imports (Reported by CSD59ALL on GitHub)
+- Fixed ESK export writing corrupt ESK files
+- Added DYT Index option on EMD import (e.g. 2 = DATA002)
+- Cleaned imported EMB/DYT texture names
+- Fixed a bug where importing multiple character parts would re-use textures from other characters with same material name
+- Added warnings for unsupported DDS imports
+- Removed "Auto Merge by Distance" import option (Now always on)
+
 ## 1.0.7
 
 - Fixed thumb import for ESKs
