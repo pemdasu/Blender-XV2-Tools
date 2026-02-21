@@ -5,6 +5,7 @@ import bpy
 import mathutils
 
 from ...utils import read_cstring
+from ...utils.binary import i16, u16, u32, u64
 
 ESK_SIGNATURE = 1263748387
 
@@ -39,39 +40,36 @@ class ESK_File:
         self.skeleton_id: int = 0
 
 
-def parse_esk(path: str) -> ESK_File:
-    with open(path, "rb") as file_handle:
-        data = file_handle.read()
-
-    if struct.unpack_from("<I", data, 0)[0] != ESK_SIGNATURE:
+def parse_esk_bytes(data: bytes) -> ESK_File:
+    if u32(data, 0) != ESK_SIGNATURE:
         raise ValueError("Invalid ESK signature")
 
     esk = ESK_File()
 
-    esk.version = struct.unpack_from("<H", data, 8)[0]
-    esk.i_10 = struct.unpack_from("<H", data, 10)[0]
-    esk.i_12 = struct.unpack_from("<I", data, 12)[0]
-    skeleton_offset = struct.unpack_from("<I", data, 16)[0]
-    esk.i_24 = struct.unpack_from("<I", data, 24)[0]
+    esk.version = u16(data, 8)
+    esk.i_10 = u16(data, 10)
+    esk.i_12 = u32(data, 12)
+    skeleton_offset = u32(data, 16)
+    esk.i_24 = u32(data, 24)
     offs = skeleton_offset
 
-    bone_count = struct.unpack_from("<h", data, offs + 0)[0]
-    esk.skeleton_flag = struct.unpack_from("<h", data, offs + 2)[0]
-    bone_index_table_offset = struct.unpack_from("<I", data, offs + 4)[0] + offs
-    name_table_offset = struct.unpack_from("<I", data, offs + 8)[0] + offs
-    relative_transform_offset = struct.unpack_from("<I", data, offs + 12)[0] + offs
-    absolute_matrix_offset = struct.unpack_from("<I", data, offs + 16)[0]
+    bone_count = i16(data, offs + 0)
+    esk.skeleton_flag = i16(data, offs + 2)
+    bone_index_table_offset = u32(data, offs + 4) + offs
+    name_table_offset = u32(data, offs + 8) + offs
+    relative_transform_offset = u32(data, offs + 12) + offs
+    absolute_matrix_offset = u32(data, offs + 16)
     if absolute_matrix_offset:
         absolute_matrix_offset += offs
-    esk.skeleton_id = struct.unpack_from("<Q", data, offs + 28)[0]
+    esk.skeleton_id = u64(data, offs + 28)
 
     for bone_index in range(bone_count):
         bone_index_offset = bone_index_table_offset + 8 * bone_index
-        parent_idx = struct.unpack_from("<h", data, bone_index_offset + 0)[0]
-        child_idx = struct.unpack_from("<h", data, bone_index_offset + 2)[0]
-        sibling_idx = struct.unpack_from("<h", data, bone_index_offset + 4)[0]
+        parent_idx = i16(data, bone_index_offset + 0)
+        child_idx = i16(data, bone_index_offset + 2)
+        sibling_idx = i16(data, bone_index_offset + 4)
 
-        name_rel = struct.unpack_from("<I", data, name_table_offset + 4 * bone_index)[0]
+        name_rel = u32(data, name_table_offset + 4 * bone_index)
         name_off = offs + name_rel
         name = read_cstring(data, name_off)
 
@@ -99,6 +97,12 @@ def parse_esk(path: str) -> ESK_File:
         esk.bones.append(esk_bone)
 
     return esk
+
+
+def parse_esk(path: str) -> ESK_File:
+    with open(path, "rb") as file_handle:
+        data = file_handle.read()
+    return parse_esk_bytes(data)
 
 
 def build_armature(esk: ESK_File, armature_name: str = "ESK_Armature") -> bpy.types.Object:

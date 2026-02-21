@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ...utils import half_to_float, read_cstring
+from ...utils.binary import f32, i16, i32, u16
 from ..ESK.ESK import ESK_Bone, ESK_File
 
 
@@ -83,12 +84,12 @@ class _EANParser:
         self.link_skeleton = link_skeleton
 
     def parse(self) -> EANFile:
-        animation_count = self._u16(18)
-        skeleton_offset = self._i32(20)
-        animation_table_offset = self._i32(24)
-        animation_names_offset = self._i32(28)
+        animation_count = u16(self.data, 18)
+        skeleton_offset = i32(self.data, 20)
+        animation_table_offset = i32(self.data, 24)
+        animation_names_offset = i32(self.data, 28)
 
-        i_08 = self._i32(8)
+        i_08 = i32(self.data, 8)
         is_camera = self.data[16] != 0
         i_17 = self.data[17]
 
@@ -96,8 +97,8 @@ class _EANParser:
 
         animations: list[EANAnimation] = []
         for i in range(animation_count):
-            anim_ptr = self._i32(animation_table_offset + 4 * i)
-            name_ptr = self._i32(animation_names_offset + 4 * i)
+            anim_ptr = i32(self.data, animation_table_offset + 4 * i)
+            name_ptr = i32(self.data, animation_names_offset + 4 * i)
             if anim_ptr == 0:
                 continue
             animation = self._parse_animation(anim_ptr, name_ptr, i, skeleton)
@@ -116,18 +117,18 @@ class _EANParser:
         if offset <= 0:
             return skeleton
 
-        bone_count = self._i16(offset + 0)
-        bone_index_table_offset = self._i32(offset + 4) + offset
-        name_table_offset = self._i32(offset + 8) + offset
-        skinning_table_offset = self._i32(offset + 12) + offset
+        bone_count = i16(self.data, offset + 0)
+        bone_index_table_offset = i32(self.data, offset + 4) + offset
+        name_table_offset = i32(self.data, offset + 8) + offset
+        skinning_table_offset = i32(self.data, offset + 12) + offset
 
         for bone_index in range(bone_count):
             bone_index_offset = bone_index_table_offset + 8 * bone_index
-            parent_idx = self._i16(bone_index_offset + 0)
-            child_idx = self._i16(bone_index_offset + 2)
-            sibling_idx = self._i16(bone_index_offset + 4)
+            parent_idx = i16(self.data, bone_index_offset + 0)
+            child_idx = i16(self.data, bone_index_offset + 2)
+            sibling_idx = i16(self.data, bone_index_offset + 4)
 
-            name_rel = self._i32(name_table_offset + 4 * bone_index)
+            name_rel = i32(self.data, name_table_offset + 4 * bone_index)
             name_off = offset + name_rel
             name = read_cstring(self.data, name_off)
 
@@ -157,37 +158,37 @@ class _EANParser:
     ) -> EANAnimation:
         index_size = self.data[offset + 2]
         float_size = self.data[offset + 3]
-        node_count = self._i32(offset + 8)
-        node_table_offset = self._i32(offset + 12) + offset
+        node_count = i32(self.data, offset + 8)
+        node_table_offset = i32(self.data, offset + 12) + offset
 
         float_precision = FloatPrecision(float_size)
         nodes: list[EANNode] = []
 
         for _ in range(node_count):
-            node_ptr = self._i32(node_table_offset) + offset
-            bone_index = self._i16(node_ptr)
+            node_ptr = i32(self.data, node_table_offset) + offset
+            bone_index = i16(self.data, node_ptr)
             bone_name = (
                 skeleton.bones[bone_index].name
                 if 0 <= bone_index < len(skeleton.bones)
                 else f"bone_{bone_index}"
             )
-            keyframed_count = self._i16(node_ptr + 2)
-            keyframed_offset = self._i32(node_ptr + 4) + node_ptr
+            keyframed_count = i16(self.data, node_ptr + 2)
+            keyframed_offset = i32(self.data, node_ptr + 4) + node_ptr
 
             components: list[EANAnimationComponent] = []
             for _ in range(keyframed_count):
-                comp_ptr = self._i32(keyframed_offset) + node_ptr
+                comp_ptr = i32(self.data, keyframed_offset) + node_ptr
                 comp_type = (
                     ComponentType(self.data[comp_ptr + 0])
                     if self.data[comp_ptr + 0] in ComponentType._value2member_map_
                     else ComponentType.Unknown
                 )
                 i_01 = self.data[comp_ptr + 1]
-                i_02 = self._i16(comp_ptr + 2)
+                i_02 = i16(self.data, comp_ptr + 2)
 
-                keyframe_count = self._i32(comp_ptr + 4)
-                index_list_offset = self._i32(comp_ptr + 8) + comp_ptr
-                matrix_offset = self._i32(comp_ptr + 12) + comp_ptr
+                keyframe_count = i32(self.data, comp_ptr + 4)
+                index_list_offset = i32(self.data, comp_ptr + 8) + comp_ptr
+                matrix_offset = i32(self.data, comp_ptr + 12) + comp_ptr
 
                 keyframes = self._parse_keyframes(
                     index_list_offset,
@@ -237,37 +238,25 @@ class _EANParser:
                 frame = self.data[idx_off]
                 idx_off += 1
             else:
-                frame = self._u16(idx_off)
+                frame = u16(self.data, idx_off)
                 idx_off += 2
 
             if float_size == FloatPrecision._16BIT:
-                x = half_to_float(self._u16(flt_off + 0))
-                y = half_to_float(self._u16(flt_off + 2))
-                z = half_to_float(self._u16(flt_off + 4))
-                w = half_to_float(self._u16(flt_off + 6))
+                x = half_to_float(u16(self.data, flt_off + 0))
+                y = half_to_float(u16(self.data, flt_off + 2))
+                z = half_to_float(u16(self.data, flt_off + 4))
+                w = half_to_float(u16(self.data, flt_off + 6))
                 flt_off += 8
             else:
-                x = self._f32(flt_off + 0)
-                y = self._f32(flt_off + 4)
-                z = self._f32(flt_off + 8)
-                w = self._f32(flt_off + 12)
+                x = f32(self.data, flt_off + 0)
+                y = f32(self.data, flt_off + 4)
+                z = f32(self.data, flt_off + 8)
+                w = f32(self.data, flt_off + 12)
                 flt_off += 16
 
             keyframes.append(EANKeyframe(frame_index=frame, x=x, y=y, z=z, w=w))
 
         return keyframes
-
-    def _u16(self, offset: int) -> int:
-        return struct.unpack_from("<H", self.data, offset)[0]
-
-    def _i16(self, offset: int) -> int:
-        return struct.unpack_from("<h", self.data, offset)[0]
-
-    def _i32(self, offset: int) -> int:
-        return struct.unpack_from("<i", self.data, offset)[0]
-
-    def _f32(self, offset: int) -> float:
-        return struct.unpack_from("<f", self.data, offset)[0]
 
 
 __all__ = [
