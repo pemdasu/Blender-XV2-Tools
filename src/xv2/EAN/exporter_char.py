@@ -1,4 +1,3 @@
-import contextlib
 import secrets
 import struct
 from collections import defaultdict
@@ -16,6 +15,13 @@ def _align16(buf: bytearray) -> None:
     pad = (-len(buf)) % 16
     if pad:
         buf.extend(b"\x00" * pad)
+
+
+def _to_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _bone_child_sibling_indices(bones: list[ESK_Bone]) -> None:
@@ -165,8 +171,12 @@ def _load_source_ean_template(path_value: object) -> dict[str, object] | None:
 
         source_esk = ESK_File()
         source_rest_locals: dict[str, mathutils.Matrix] = {}
-        index_table_offset = struct.unpack_from("<I", data, skeleton_offset + 4)[0] + skeleton_offset
-        skinning_table_offset = struct.unpack_from("<I", data, skeleton_offset + 12)[0] + skeleton_offset
+        index_table_offset = (
+            struct.unpack_from("<I", data, skeleton_offset + 4)[0] + skeleton_offset
+        )
+        skinning_table_offset = (
+            struct.unpack_from("<I", data, skeleton_offset + 12)[0] + skeleton_offset
+        )
         for bone_index in range(bone_count):
             bone_index_offset = index_table_offset + 8 * bone_index
             parent_idx = struct.unpack_from("<h", data, bone_index_offset + 0)[0]
@@ -215,7 +225,7 @@ def _load_source_ean_template(path_value: object) -> dict[str, object] | None:
             "esk": source_esk,
             "rest_locals": source_rest_locals,
         }
-    except Exception:
+    except (OSError, struct.error, TypeError, ValueError):
         return None
 
 
@@ -326,7 +336,7 @@ def _patch_skeleton_rest_transforms(
             struct.pack_into("<4f", data, t_off + 32, scale.x, scale.y, scale.z, 1.0)
 
         return bytes(data)
-    except Exception:
+    except (struct.error, TypeError, ValueError):
         return skeleton_bytes
 
 
@@ -409,7 +419,7 @@ def _build_animation_bytes(
     ] = defaultdict(dict)
     for frame in sorted(frames_to_bones.keys()):
         scene.frame_set(frame)
-        with contextlib.suppress(Exception):
+        if hasattr(bpy.context.view_layer, "update"):
             bpy.context.view_layer.update()
         arm_eval = arm_obj.evaluated_get(depsgraph)
         for bone_name in frames_to_bones[frame]:
@@ -571,14 +581,8 @@ def export_ean(
 
     try:
         esk, skeleton_bytes, rest_locals = _build_skeleton_from_armature(arm_obj)
-        try:
-            header_version = int(arm_obj.get("ean_i08", 37505))
-        except Exception:
-            header_version = 37505
-        try:
-            header_i17 = int(arm_obj.get("ean_i17", 4))
-        except Exception:
-            header_i17 = 4
+        header_version = _to_int(arm_obj.get("ean_i08", 37505), 37505)
+        header_i17 = _to_int(arm_obj.get("ean_i17", 4), 4)
         preferred_float_size = 1
         source_template = _load_source_ean_template(arm_obj.get("ean_source"))
         if source_template:
@@ -625,7 +629,7 @@ def export_ean(
             _, anim_label = _parse_anim_meta(act.name, fallback_idx)
 
             arm_obj.animation_data.action = act
-            with contextlib.suppress(Exception):
+            if hasattr(bpy.context.view_layer, "update"):
                 bpy.context.view_layer.update()
 
             anim_bytes = _build_animation_bytes(
@@ -695,10 +699,9 @@ def export_ean(
                 out.extend(anim_label.encode("ascii", "ignore"))
                 out.append(0)
 
-        with open(filepath, "wb") as f:
-            f.write(out)
+        Path(filepath).write_bytes(out)
         return True, None
-    except Exception as exc:
+    except (RuntimeError, OSError, ValueError, TypeError, struct.error) as exc:
         import traceback
 
         traceback.print_exc()

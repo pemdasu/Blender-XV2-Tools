@@ -1,4 +1,5 @@
 import math
+import struct
 
 import bpy
 
@@ -8,7 +9,7 @@ from .ESK import build_armature, parse_esk
 def import_esk(path: str) -> bpy.types.Object | None:
     try:
         esk = parse_esk(path)
-    except Exception as exc:
+    except (OSError, ValueError, struct.error) as exc:
         print(f"Failed to read ESK: {exc}")
         return None
 
