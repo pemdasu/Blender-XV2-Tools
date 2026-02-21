@@ -1972,15 +1972,8 @@ def _write_into_source_layout(
     source_bytes: bytes,
     merged_fmp: FMPFile,
     collision_meshes_by_object: dict[int, dict[int, CollisionMeshData]] | None = None,
-    warn: Callable[[str], None] | None = None,
 ) -> bytes:
     out = bytearray(source_bytes)
-    requested_collision_meshes = 0
-    patched_collision_meshes = 0
-    skipped_invalid_range = 0
-    skipped_other = 0
-    reallocated_collision_meshes = 0
-    patched_hvk_meshes = 0
     rewritten_hvk_cache: dict[int, tuple[int, int]] = {}
 
     def i32(offset: int) -> int:
@@ -2185,7 +2178,6 @@ def _write_into_source_layout(
                     _write_subpart_at(out, existing_subpart2_offset, collider.subpart2)
 
         if object_collision_meshes:
-            requested_collision_meshes += len(object_collision_meshes)
             hitbox_group_index = struct.unpack_from("<H", out, record_offset + 8)[0]
             if (
                 hitbox_group_index != 0xFFFF
@@ -2200,30 +2192,14 @@ def _write_into_source_layout(
                     if group_collider_count > 0 and group_collider_offset > 0:
                         for collider_index, mesh_data in object_collision_meshes.items():
                             if collider_index < 0 or collider_index >= group_collider_count:
-                                skipped_other += 1
                                 continue
                             vertices, normals, faces, collision_type = mesh_data
-                            collider_name = f"collider_{collider_index}"
-                            if 0 <= hitbox_group_index < len(
-                                merged_fmp.collision_groups
-                            ) and 0 <= collider_index < len(
-                                merged_fmp.collision_groups[hitbox_group_index].colliders
-                            ):
-                                mapped_name = str(
-                                    merged_fmp.collision_groups[hitbox_group_index]
-                                    .colliders[collider_index]
-                                    .name
-                                )
-                                if mapped_name:
-                                    collider_name = mapped_name
                             if not vertices or not faces or len(vertices) != len(normals):
-                                skipped_other += 1
                                 continue
                             collider_record_offset = group_collider_offset + (collider_index * 40)
                             if collider_record_offset < 0 or (collider_record_offset + 40) > len(
                                 out
                             ):
-                                skipped_invalid_range += 1
                                 continue
 
                             havok_list_count = i32(collider_record_offset + 12)
@@ -2254,13 +2230,10 @@ def _write_into_source_layout(
                                 or face_index >= len(write_vertices)
                                 for face_index in write_faces
                             ):
-                                skipped_other += 1
                                 continue
 
                             target_vertex_count = len(write_vertices)
                             target_face_count = len(write_faces)
-                            target_vertex_offset = existing_vertex_offset
-                            target_face_offset = existing_face_offset
                             can_write_in_place = (
                                 existing_vertex_count == target_vertex_count
                                 and existing_face_count == target_face_count
@@ -2294,12 +2267,12 @@ def _write_into_source_layout(
                                         int(face_vertex_index) & 0xFFFF,
                                     )
                             else:
-                                target_vertex_offset = _append_collision_vertices_to_buffer(
+                                appended_vertex_offset = _append_collision_vertices_to_buffer(
                                     out,
                                     write_vertices,
                                     write_normals,
                                 )
-                                target_face_offset = _append_collision_faces_to_buffer(
+                                appended_face_offset = _append_collision_faces_to_buffer(
                                     out,
                                     write_faces,
                                 )
@@ -2307,15 +2280,14 @@ def _write_into_source_layout(
                                     "<i", out, vertex_count_offset, int(target_vertex_count)
                                 )
                                 struct.pack_into(
-                                    "<i", out, vertex_data_offset_offset, int(target_vertex_offset)
+                                    "<i", out, vertex_data_offset_offset, int(appended_vertex_offset)
                                 )
                                 struct.pack_into(
                                     "<i", out, face_count_offset, int(target_face_count)
                                 )
                                 struct.pack_into(
-                                    "<i", out, face_data_offset_offset, int(target_face_offset)
+                                    "<i", out, face_data_offset_offset, int(appended_face_offset)
                                 )
-                                reallocated_collision_meshes += 1
 
                             if (
                                 havok_list_count > 0
@@ -2414,39 +2386,6 @@ def _write_into_source_layout(
                                                 int(new_hvk_offset),
                                                 int(new_hvk_size),
                                             )
-                                            patched_hvk_meshes += 1
-
-                            patched_collision_meshes += 1
-
-    if collision_meshes_by_object and warn:
-        warn(
-            "Collision writeback stats: "
-            f"requested={requested_collision_meshes}, "
-            f"patched_buffers={patched_collision_meshes}, "
-            f"patched_havok={patched_hvk_meshes}, "
-            f"skipped_invalid_range={skipped_invalid_range}, "
-            f"skipped_other={skipped_other}, "
-            f"reallocated={reallocated_collision_meshes}."
-        )
-        if requested_collision_meshes <= 0:
-            object_keys = sorted(int(key) for key in collision_meshes_by_object.keys())
-            preview_keys = ", ".join(str(key) for key in object_keys[:10])
-            if len(object_keys) > 10:
-                preview_keys += ", ..."
-            warn(
-                "Collision writeback did not match any source object indices. "
-                f"Mapped object indices: [{preview_keys}]"
-            )
-        if patched_collision_meshes <= 0 and requested_collision_meshes > 0:
-            warn(
-                "Collision mesh writeback applied 0 meshes. Export using the original MAP as source and "
-                "check collider index mapping."
-            )
-        elif patched_hvk_meshes <= 0 and patched_collision_meshes > 0:
-            warn(
-                "Collision mesh writeback updated collision buffers but did not patch any embedded "
-                "Havok extern meshes. Some collisions may still look unchanged in-game."
-            )
 
     return bytes(out)
 
@@ -2840,9 +2779,7 @@ def export_map(
 
     merged_fmp = _merge_plan_into_source(plan, source_fmp)
     collision_meshes_by_object: dict[int, dict[int, CollisionMeshData]] = {}
-    collected_collision_mesh_count = 0
-    mapped_collision_mesh_count = 0
-    skipped_collision_object_names: list[str] = []
+    found_collision_meshes = False
     if export_collision_meshes:
         object_indices_by_name: dict[str, list[int]] = defaultdict(list)
         for merged_object_index, merged_object in enumerate(merged_fmp.objects):
@@ -2851,7 +2788,7 @@ def export_map(
         for plan_object in plan.objects:
             if not plan_object.collision_meshes:
                 continue
-            collected_collision_mesh_count += len(plan_object.collision_meshes)
+            found_collision_meshes = True
 
             target_object_index: int | None = None
             if plan_object.index is not None and 0 <= int(plan_object.index) < len(
@@ -2864,7 +2801,6 @@ def export_map(
                     target_object_index = int(name_matches[0])
 
             if target_object_index is None:
-                skipped_collision_object_names.append(str(plan_object.name))
                 continue
 
             existing = collision_meshes_by_object.get(target_object_index)
@@ -2872,25 +2808,12 @@ def export_map(
                 collision_meshes_by_object[target_object_index] = dict(plan_object.collision_meshes)
             else:
                 existing.update(plan_object.collision_meshes)
-            mapped_collision_mesh_count += len(plan_object.collision_meshes)
 
-        if warn:
-            if collected_collision_mesh_count <= 0:
-                warn(
-                    "Collision mesh export is enabled, but no collision mesh objects were found. "
-                    "Make sure edited meshes still have custom property 'fmp_collision_mesh'."
-                )
-            else:
-                warn(
-                    "Collision mesh export collected "
-                    f"{collected_collision_mesh_count} mesh(es), mapped {mapped_collision_mesh_count} "
-                    f"mesh(es) to {len(collision_meshes_by_object)} object index entries."
-                )
-            if skipped_collision_object_names:
-                preview = ", ".join(skipped_collision_object_names[:6])
-                if len(skipped_collision_object_names) > 6:
-                    preview += ", ..."
-                warn(f"Collision mesh export skipped object index mapping for: {preview}")
+        if warn and not found_collision_meshes:
+            warn(
+                "Collision mesh export is enabled, but no collision mesh objects were found. "
+                "Make sure edited meshes still have custom property 'fmp_collision_mesh'."
+            )
 
     out_bytes: bytes
     if source_bytes and _can_reuse_source_layout(source_fmp, merged_fmp):
@@ -2899,7 +2822,6 @@ def export_map(
                 source_bytes,
                 merged_fmp,
                 collision_meshes_by_object=collision_meshes_by_object,
-                warn=warn,
             )
         except (RuntimeError, OSError, ValueError, TypeError, struct.error) as exc:
             if warn:
@@ -2914,7 +2836,6 @@ def export_map(
                         out_bytes,
                         merged_fmp,
                         collision_meshes_by_object=collision_meshes_by_object,
-                        warn=warn,
                     )
                 except (RuntimeError, OSError, ValueError, TypeError, struct.error) as exc:
                     if warn:
@@ -2935,7 +2856,6 @@ def export_map(
                     out_bytes,
                     merged_fmp,
                     collision_meshes_by_object=collision_meshes_by_object,
-                    warn=warn,
                 )
             except (RuntimeError, OSError, ValueError, TypeError, struct.error) as exc:
                 if warn:
