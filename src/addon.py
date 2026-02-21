@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import bpy
+import bpy.utils.previews
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
@@ -11,7 +12,7 @@ from bpy.props import (
     IntProperty,
     StringProperty,
 )
-from bpy.types import Operator
+from bpy.types import Menu, Operator
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from .ui import (
@@ -42,6 +43,20 @@ from .xv2.FMP.exporter import export_map
 from .xv2.FMP.importer import import_map_in_steps
 from .xv2.NSK.exporter import export_nsk
 from .xv2.NSK.importer import import_nsk
+
+_custom_icons = None
+_xv2_assets_icon_id = 0
+_entry_icon_ids: dict[str, int] = {}
+_icon_dir = Path(__file__).resolve().parent / "icons"
+_xv2_assets_icon_path = _icon_dir / "DBXV2.png"
+_entry_icon_paths = {
+    "emd": _icon_dir / "icon_emd.png",
+    "esk": _icon_dir / "icon_esk.png",
+    "ean": _icon_dir / "icon_ean.png",
+    "cam": _icon_dir / "icon_cam.png",
+    "nsk": _icon_dir / "icon_nsk.png",
+    "map": _icon_dir / "icon_map.png",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +343,7 @@ class IMPORT_OT_map(Operator, ImportHelper):
             "Reuse imported NSK scenes as Blender collection instances. Faster and lighter, "
             "but less direct per-instance mesh editing"
         ),
-        default=True,
+        default=False,
     )
     _timer = None
     _paths: list[str]
@@ -602,57 +617,97 @@ class EXPORT_OT_map(Operator, ExportHelper):
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
+class XV2_MT_import_assets(Menu):
+    bl_idname = "TOPBAR_MT_xv2_import_assets"
+    bl_label = "Dragon Ball XV2 Assets"
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.operator(
+            IMPORT_OT_emd.bl_idname,
+            text="Dragon Ball XV2 EMD (.emd)",
+            icon_value=_entry_icon_ids["emd"],
+        )
+        layout.operator(
+            IMPORT_OT_esk.bl_idname,
+            text="Dragon Ball XV2 ESK (.esk)",
+            icon_value=_entry_icon_ids["esk"],
+        )
+        layout.operator(
+            IMPORT_OT_ean.bl_idname,
+            text="Dragon Ball XV2 EAN (.ean)",
+            icon_value=_entry_icon_ids["ean"],
+        )
+        layout.operator(
+            IMPORT_OT_cam_ean.bl_idname,
+            text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+            icon_value=_entry_icon_ids["cam"],
+        )
+        layout.separator()
+        layout.operator(
+            IMPORT_OT_nsk.bl_idname,
+            text="Dragon Ball XV2 NSK (.nsk)",
+            icon_value=_entry_icon_ids["nsk"],
+        )
+        layout.operator(
+            IMPORT_OT_map.bl_idname,
+            text="Dragon Ball XV2 MAP/FMP (.map)",
+            icon_value=_entry_icon_ids["map"],
+        )
+
+
+class XV2_MT_export_assets(Menu):
+    bl_idname = "TOPBAR_MT_xv2_export_assets"
+    bl_label = "Dragon Ball XV2 Assets"
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.operator(
+            EXPORT_OT_emd.bl_idname,
+            text="Dragon Ball XV2 EMD (.emd)",
+            icon_value=_entry_icon_ids["emd"],
+        )
+        layout.operator(
+            EXPORT_OT_esk.bl_idname,
+            text="Dragon Ball XV2 ESK (.esk)",
+            icon_value=_entry_icon_ids["esk"],
+        )
+        layout.operator(
+            EXPORT_OT_ean.bl_idname,
+            text="Dragon Ball XV2 EAN (.ean)",
+            icon_value=_entry_icon_ids["ean"],
+        )
+        layout.operator(
+            EXPORT_OT_cam_ean.bl_idname,
+            text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+            icon_value=_entry_icon_ids["cam"],
+        )
+        layout.separator()
+        layout.operator(
+            EXPORT_OT_nsk.bl_idname,
+            text="Dragon Ball XV2 NSK (.nsk)",
+            icon_value=_entry_icon_ids["nsk"],
+        )
+        layout.operator(
+            EXPORT_OT_map.bl_idname,
+            text="Dragon Ball XV2 MAP/FMP (.map)",
+            icon_value=_entry_icon_ids["map"],
+        )
+
+
 def menu_func(self, _context):
-    self.layout.operator(
-        IMPORT_OT_emd.bl_idname,
-        text="Dragon Ball XV2 EMD (.emd)",
-    )
-    self.layout.operator(
-        IMPORT_OT_esk.bl_idname,
-        text="Dragon Ball XV2 ESK (.esk)",
-    )
-    self.layout.operator(
-        IMPORT_OT_ean.bl_idname,
-        text="Dragon Ball XV2 EAN (.ean)",
-    )
-    self.layout.operator(
-        IMPORT_OT_cam_ean.bl_idname,
-        text="Dragon Ball XV2 Camera EAN (.cam.ean)",
-    )
-    self.layout.operator(
-        IMPORT_OT_nsk.bl_idname,
-        text="Dragon Ball XV2 NSK (.nsk)",
-    )
-    self.layout.operator(
-        IMPORT_OT_map.bl_idname,
-        text="Dragon Ball XV2 MAP/FMP (.map)",
+    self.layout.menu(
+        XV2_MT_import_assets.bl_idname,
+        text="Dragon Ball XV2 Assets",
+        icon_value=_xv2_assets_icon_id,
     )
 
 
 def menu_func_export(self, _context):
-    self.layout.operator(
-        EXPORT_OT_emd.bl_idname,
-        text="Dragon Ball XV2 EMD (.emd)",
-    )
-    self.layout.operator(
-        EXPORT_OT_esk.bl_idname,
-        text="Dragon Ball XV2 ESK (.esk)",
-    )
-    self.layout.operator(
-        EXPORT_OT_ean.bl_idname,
-        text="Dragon Ball XV2 EAN (.ean)",
-    )
-    self.layout.operator(
-        EXPORT_OT_cam_ean.bl_idname,
-        text="Dragon Ball XV2 Camera EAN (.cam.ean)",
-    )
-    self.layout.operator(
-        EXPORT_OT_nsk.bl_idname,
-        text="Dragon Ball XV2 NSK (.nsk)",
-    )
-    self.layout.operator(
-        EXPORT_OT_map.bl_idname,
-        text="Dragon Ball XV2 MAP/FMP (.map)",
+    self.layout.menu(
+        XV2_MT_export_assets.bl_idname,
+        text="Dragon Ball XV2 Assets",
+        icon_value=_xv2_assets_icon_id,
     )
 
 
@@ -752,6 +807,8 @@ classes = [
     EMD_OT_texture_sampler_sync_props,
     VIEW3D_PT_emd_texture_samplers,
     PROPERTIES_PT_emd_texture_samplers,
+    XV2_MT_import_assets,
+    XV2_MT_export_assets,
     SCDLinkSettings,
     VIEW3D_PT_scd_link,
     XV2_OT_scd_link_to_armature,
@@ -791,6 +848,23 @@ def _unregister_class(cls):
 
 
 def register():
+    global _custom_icons, _xv2_assets_icon_id, _entry_icon_ids
+
+    if not _xv2_assets_icon_path.is_file():
+        raise FileNotFoundError(f"Missing required icon file: {_xv2_assets_icon_path}")
+    for icon_key, icon_path in _entry_icon_paths.items():
+        if not icon_path.is_file():
+            raise FileNotFoundError(f"Missing required icon file: {icon_path} ({icon_key})")
+
+    _custom_icons = bpy.utils.previews.new()
+    _custom_icons.load("xv2_assets", str(_xv2_assets_icon_path), "IMAGE")
+    _xv2_assets_icon_id = int(_custom_icons["xv2_assets"].icon_id)
+    _entry_icon_ids = {}
+    for icon_key, icon_path in _entry_icon_paths.items():
+        icon_name = f"xv2_{icon_key}"
+        _custom_icons.load(icon_name, str(icon_path), "IMAGE")
+        _entry_icon_ids[icon_key] = int(_custom_icons[icon_name].icon_id)
+
     for cls in classes:
         _register_class(cls)
 
@@ -810,6 +884,8 @@ def register():
 
 
 def unregister():
+    global _custom_icons, _xv2_assets_icon_id, _entry_icon_ids
+
     bpy.types.TOPBAR_MT_file_import.remove(menu_func)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
 
@@ -821,6 +897,12 @@ def unregister():
     del bpy.types.Scene.xv2_cam_props
     del bpy.types.Camera.xv2_fov
     del bpy.types.Camera.xv2_roll
+
+    if _custom_icons is not None:
+        bpy.utils.previews.remove(_custom_icons)
+    _custom_icons = None
+    _xv2_assets_icon_id = 0
+    _entry_icon_ids = {}
 
     for cls in reversed(classes):
         _unregister_class(cls)
