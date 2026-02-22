@@ -287,7 +287,7 @@ class IMPORT_OT_nsk(Operator, ImportHelper):
 # ---------------------------------------------------------------------------
 class IMPORT_OT_map(Operator, ImportHelper):
     bl_idname = "import_scene.xv2_map"
-    bl_label = "Import MAP/FMP (Xenoverse 2)"
+    bl_label = "Import MAP (Xenoverse 2)"
 
     files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement)  # type: ignore
     directory: StringProperty(subtype="DIR_PATH")  # type: ignore
@@ -425,7 +425,6 @@ class IMPORT_OT_map(Operator, ImportHelper):
             context.window_manager.progress_update(overall_progress)
             with contextlib.suppress(AttributeError, RuntimeError):
                 context.workspace.status_text_set(message)
-            print(message)
             return {"RUNNING_MODAL"}
         except StopIteration as stop:
             if stop.value is not None:
@@ -566,7 +565,7 @@ class EXPORT_OT_nsk(Operator, ExportHelper):
 
 class EXPORT_OT_map(Operator, ExportHelper):
     bl_idname = "export_scene.xv2_map"
-    bl_label = "Export MAP/FMP (Xenoverse 2)"
+    bl_label = "Export MAP (Xenoverse 2)"
 
     filename_ext = ".map"
     filter_glob: StringProperty(default="*.map", options={"HIDDEN"})  # type: ignore
@@ -651,7 +650,7 @@ class XV2_MT_import_assets(Menu):
         )
         layout.operator(
             IMPORT_OT_map.bl_idname,
-            text="Dragon Ball XV2 MAP/FMP (.map)",
+            text="Dragon Ball XV2 MAP (.map)",
             icon_value=_entry_icon_ids["map"],
         )
 
@@ -690,7 +689,7 @@ class XV2_MT_export_assets(Menu):
         )
         layout.operator(
             EXPORT_OT_map.bl_idname,
-            text="Dragon Ball XV2 MAP/FMP (.map)",
+            text="Dragon Ball XV2 MAP (.map)",
             icon_value=_entry_icon_ids["map"],
         )
 

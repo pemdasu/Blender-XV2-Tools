@@ -130,12 +130,10 @@ def _to_blender_point(position: tuple[float, float, float]) -> tuple[float, floa
     return (float(vec.x), float(vec.y), float(vec.z))
 
 
-def _create_collision_mesh_object(
-    collider_empty: bpy.types.Object,
+def _build_collision_mesh_data(
     mesh_name: str,
     vertex_data,
-    collection: bpy.types.Collection | None = None,
-) -> bpy.types.Object | None:
+) -> bpy.types.Mesh | None:
     if vertex_data is None:
         return None
     if not vertex_data.vertices or not vertex_data.faces:
@@ -150,14 +148,13 @@ def _create_collision_mesh_object(
         index1 = int(face_indices[face_offset + 1])
         index2 = int(face_indices[face_offset + 2])
         if (
-            index0 < 0
+            index0 in (index1, index2)
+            or index0 < 0
             or index1 < 0
             or index2 < 0
             or index0 >= len(vertices)
             or index1 >= len(vertices)
             or index2 >= len(vertices)
-            or index0 == index1
-            or index0 == index2
             or index1 == index2
         ):
             continue
@@ -169,6 +166,20 @@ def _create_collision_mesh_object(
     mesh_data = bpy.data.meshes.new(mesh_name)
     mesh_data.from_pydata(vertices, [], faces)
     mesh_data.update()
+    return mesh_data
+
+
+def _create_collision_mesh_object(
+    collider_empty: bpy.types.Object,
+    mesh_name: str,
+    collection: bpy.types.Collection | None = None,
+    mesh_data: bpy.types.Mesh | None = None,
+    vertex_data=None,
+) -> bpy.types.Object | None:
+    if mesh_data is None:
+        mesh_data = _build_collision_mesh_data(mesh_name, vertex_data)
+        if mesh_data is None:
+            return None
 
     mesh_obj = bpy.data.objects.new(mesh_name, mesh_data)
     target_collection = collection if collection is not None else bpy.context.collection
@@ -221,8 +232,11 @@ def import_map_in_steps(
         tuple,
         tuple[bpy.types.Object, mathutils.Matrix, bpy.types.Collection | None],
     ] = {}
+    nsk_import_failures: set[tuple] = set()
     nsk_path_cache: dict[str, Path] = {}
     asset_path_cache: dict[str, Path | None] = {}
+    collision_mesh_data_cache: dict[tuple[int, int], bpy.types.Mesh | None] = {}
+    missing_nsk_warned: set[str] = set()
     nsk_source_collection = (
         bpy.data.collections.new(f"{map_name}_nsk_sources") if use_collection_instances else None
     )
@@ -230,8 +244,143 @@ def import_map_in_steps(
     for object_index, object_data in enumerate(fmp.objects):
         object_name = sanitize_name(object_data.name, f"object_{object_index:03d}")
         instance_matrices = object_instances[object_index]
+        instance_count = max(1, len(instance_matrices))
         multiple_instances = len(instance_matrices) > 1
         instance_data_json = serialize_instance_data(object_data.instance_data)
+        instance_data_json_str = (
+            to_json_string(instance_data_json) if instance_data_json is not None else None
+        )
+        collision_group = None
+        collision_group_index = int(object_data.hitbox_group_index)
+        if collision_group_index != 0xFFFF and 0 <= collision_group_index < len(
+            fmp.collision_groups
+        ):
+            collision_group = fmp.collision_groups[collision_group_index]
+
+        entity_entries: list[
+            tuple[
+                int,
+                object,
+                int,
+                object,
+                str,
+                str,
+                str,
+                tuple,
+                str,
+                mathutils.Matrix,
+                str | None,
+            ]
+        ] = []
+        for entity_index, entity in enumerate(object_data.entities):
+            lod_entry = pick_entity_lod(entity)
+            if lod_entry is None:
+                continue
+            lod_index, lod = lod_entry
+
+            nsk_raw = str(lod.nsk_file)
+            nsk_path = nsk_path_cache.get(nsk_raw)
+            if nsk_path is None:
+                nsk_path = resolve_nsk_path(base_dir, nsk_raw)
+                nsk_path_cache[nsk_raw] = nsk_path
+            if not nsk_path.exists():
+                nsk_warning_path = str(nsk_path)
+                if nsk_warning_path not in missing_nsk_warned:
+                    if warn:
+                        warn(f"Missing NSK for map entity: {nsk_path}")
+                    else:
+                        print("Warning: Missing NSK for map entity:", nsk_path)
+                    missing_nsk_warned.add(nsk_warning_path)
+                continue
+
+            emb_raw = entity.visual.emb_file if entity.visual is not None else ""
+            emm_raw = lod.emm_file
+            emb_key = f"emb:{emb_raw}"
+            emm_key = f"emm:{emm_raw}"
+            try:
+                emb_override = asset_path_cache[emb_key]
+            except KeyError:
+                emb_override = resolve_optional_asset_path(base_dir, emb_raw)
+                asset_path_cache[emb_key] = emb_override
+            try:
+                emm_override = asset_path_cache[emm_key]
+            except KeyError:
+                emm_override = resolve_optional_asset_path(base_dir, emm_raw)
+                asset_path_cache[emm_key] = emm_override
+
+            emb_override_str = str(emb_override) if emb_override is not None else ""
+            emm_override_str = str(emm_override) if emm_override is not None else ""
+            import_key = (
+                normalize_cache_path(str(nsk_path)),
+                normalize_cache_path(emb_override_str),
+                normalize_cache_path(emm_override_str),
+                bool(import_normals),
+                bool(import_tangents),
+                bool(merge_by_distance),
+                float(merge_distance),
+                bool(tris_to_quads),
+                bool(split_submeshes),
+            )
+            lods_json_str = (
+                to_json_string(serialize_visual_lods(entity)) if entity.visual is not None else None
+            )
+            entity_entries.append(
+                (
+                    int(entity_index),
+                    entity,
+                    int(lod_index),
+                    lod,
+                    str(nsk_path),
+                    emb_override_str,
+                    emm_override_str,
+                    import_key,
+                    sanitize_name(
+                        entity.visual.name if entity.visual is not None else "",
+                        f"entity_{entity_index:03d}",
+                    ),
+                    to_blender_axis(entity.transform.matrix),
+                    lods_json_str,
+                )
+            )
+
+        collider_entries: list[
+            tuple[int, object, object | None, str, mathutils.Matrix, str | None]
+        ] = []
+        if import_colliders:
+            for collider_index, collider in enumerate(object_data.collider_instances):
+                group_collider = None
+                if collision_group is not None and 0 <= collider_index < len(
+                    collision_group.colliders
+                ):
+                    group_collider = collision_group.colliders[collider_index]
+                base_collider_name = (
+                    sanitize_name(group_collider.name, "") if group_collider is not None else ""
+                )
+                if not base_collider_name:
+                    base_collider_name = f"{object_name}_collider_{collider_index:03d}"
+                havok_params_json = (
+                    to_json_string(
+                        [
+                            {
+                                "param1": int(param.param1),
+                                "param2": int(param.param2),
+                            }
+                            for param in collider.havok_group_parameters
+                        ]
+                    )
+                    if collider.havok_group_parameters
+                    else None
+                )
+                collider_entries.append(
+                    (
+                        int(collider_index),
+                        collider,
+                        group_collider,
+                        base_collider_name,
+                        to_blender_axis(collider.matrix.matrix),
+                        havok_params_json,
+                    )
+                )
 
         for instance_index, object_matrix in enumerate(instance_matrices):
             object_empty_name = (
@@ -250,31 +399,20 @@ def import_map_in_steps(
             object_empty["fmp_instance_index"] = int(instance_index)
             object_empty["fmp_initial_entity_index"] = int(object_data.initial_entity_index)
             object_empty["fmp_f_32"] = float(object_data.f_32)
-            if instance_data_json is not None:
-                object_empty["fmp_instance_data_json"] = to_json_string(instance_data_json)
+            if instance_data_json_str is not None:
+                object_empty["fmp_instance_data_json"] = instance_data_json_str
             if import_colliders and object_data.collider_instances:
                 imported_any = True
 
             if import_colliders:
-                collision_group = None
-                if (
-                    object_data.hitbox_group_index != 0xFFFF
-                    and 0 <= object_data.hitbox_group_index < len(fmp.collision_groups)
-                ):
-                    collision_group = fmp.collision_groups[object_data.hitbox_group_index]
-
-                for collider_index, collider in enumerate(object_data.collider_instances):
-                    group_collider = None
-                    if collision_group is not None and 0 <= collider_index < len(
-                        collision_group.colliders
-                    ):
-                        group_collider = collision_group.colliders[collider_index]
-
-                    base_collider_name = (
-                        sanitize_name(group_collider.name, "") if group_collider is not None else ""
-                    )
-                    if not base_collider_name:
-                        base_collider_name = f"{object_name}_collider_{collider_index:03d}"
+                for (
+                    collider_index,
+                    collider,
+                    group_collider,
+                    base_collider_name,
+                    collider_matrix_local,
+                    havok_params_json,
+                ) in collider_entries:
                     collider_name = (
                         f"{base_collider_name}_{instance_index:03d}"
                         if multiple_instances
@@ -283,7 +421,7 @@ def import_map_in_steps(
                     collider_empty = bpy.data.objects.new(collider_name, None)
                     link_object(collider_empty)
                     collider_empty.parent = object_empty
-                    collider_empty.matrix_local = to_blender_axis(collider.matrix.matrix)
+                    collider_empty.matrix_local = collider_matrix_local
                     collider_empty["fmp_collider_index"] = int(collider_index)
                     collider_empty["fmp_collider_i20"] = int(collider.i_20)
                     collider_empty["fmp_collider_i22"] = int(collider.i_22)
@@ -291,16 +429,8 @@ def import_map_in_steps(
                     collider_empty["fmp_collider_f28"] = float(collider.f_28)
                     collider_empty["fmp_collider_action_offset"] = int(collider.action_offset)
 
-                    if collider.havok_group_parameters:
-                        collider_empty["fmp_collider_havok_params_json"] = to_json_string(
-                            [
-                                {
-                                    "param1": int(param.param1),
-                                    "param2": int(param.param2),
-                                }
-                                for param in collider.havok_group_parameters
-                            ]
-                        )
+                    if havok_params_json is not None:
+                        collider_empty["fmp_collider_havok_params_json"] = havok_params_json
                     if collider.subpart1 is not None:
                         _set_subpart_props(
                             collider_empty,
@@ -315,11 +445,18 @@ def import_map_in_steps(
                         )
                     if import_collision_meshes and group_collider is not None:
                         collision_mesh_name = f"{base_collider_name}_collision"
+                        mesh_cache_key = (collision_group_index, int(collider_index))
+                        if mesh_cache_key not in collision_mesh_data_cache:
+                            collision_mesh_data_cache[mesh_cache_key] = _build_collision_mesh_data(
+                                collision_mesh_name,
+                                group_collider.collision_vertex_data,
+                            )
+                        collision_mesh_data = collision_mesh_data_cache[mesh_cache_key]
                         collision_mesh_obj = _create_collision_mesh_object(
                             collider_empty,
                             collision_mesh_name,
-                            group_collider.collision_vertex_data,
                             collection=collection,
+                            mesh_data=collision_mesh_data,
                         )
                         if collision_mesh_obj is not None:
                             collision_mesh_obj["fmp_collision_mesh"] = True
@@ -341,28 +478,19 @@ def import_map_in_steps(
                                 )
                                 break
 
-            for entity_index, entity in enumerate(object_data.entities):
-                lod_entry = pick_entity_lod(entity)
-                if lod_entry is None:
-                    continue
-                lod_index, lod = lod_entry
-
-                nsk_raw = str(lod.nsk_file)
-                nsk_path = nsk_path_cache.get(nsk_raw)
-                if nsk_path is None:
-                    nsk_path = resolve_nsk_path(base_dir, nsk_raw)
-                    nsk_path_cache[nsk_raw] = nsk_path
-                if not nsk_path.exists():
-                    if warn:
-                        warn(f"Missing NSK for map entity: {nsk_path}")
-                    else:
-                        print("Warning: Missing NSK for map entity:", nsk_path)
-                    continue
-
-                entity_name = sanitize_name(
-                    entity.visual.name if entity.visual is not None else "",
-                    f"entity_{entity_index:03d}",
-                )
+            for (
+                entity_index,
+                entity,
+                lod_index,
+                lod,
+                nsk_path_str,
+                emb_override_str,
+                emm_override_str,
+                import_key,
+                entity_name,
+                entity_matrix_local,
+                lods_json_str,
+            ) in entity_entries:
                 entity_empty_name = (
                     f"{object_name}_{entity_name}_entity_{entity_index:02d}_{instance_index:03d}"
                     if multiple_instances
@@ -371,7 +499,7 @@ def import_map_in_steps(
                 entity_empty = bpy.data.objects.new(entity_empty_name, None)
                 link_object(entity_empty)
                 entity_empty.parent = object_empty
-                entity_empty.matrix_local = to_blender_axis(entity.transform.matrix)
+                entity_empty.matrix_local = entity_matrix_local
                 entity_empty["fmp_entity_index"] = int(entity_index)
                 entity_empty["fmp_entity_i04"] = int(entity.i_04)
                 entity_empty["fmp_lod_distance"] = float(lod.distance)
@@ -390,36 +518,10 @@ def import_map_in_steps(
                     entity_empty["fmp_visual_i36"] = int(entity.visual.i_36)
                     entity_empty["fmp_visual_f40"] = float(entity.visual.f_40)
                     entity_empty["fmp_visual_f44"] = float(entity.visual.f_44)
-                    lods_json = serialize_visual_lods(entity)
-                    entity_empty["fmp_lods_json"] = to_json_string(lods_json)
-                emb_raw = entity.visual.emb_file if entity.visual is not None else ""
-                emm_raw = lod.emm_file
-                emb_key = f"emb:{emb_raw}"
-                emm_key = f"emm:{emm_raw}"
-                try:
-                    emb_override = asset_path_cache[emb_key]
-                except KeyError:
-                    emb_override = resolve_optional_asset_path(base_dir, emb_raw)
-                    asset_path_cache[emb_key] = emb_override
-                try:
-                    emm_override = asset_path_cache[emm_key]
-                except KeyError:
-                    emm_override = resolve_optional_asset_path(base_dir, emm_raw)
-                    asset_path_cache[emm_key] = emm_override
-
-                emb_override_str = str(emb_override) if emb_override is not None else ""
-                emm_override_str = str(emm_override) if emm_override is not None else ""
-                import_key = (
-                    normalize_cache_path(str(nsk_path)),
-                    normalize_cache_path(emb_override_str),
-                    normalize_cache_path(emm_override_str),
-                    bool(import_normals),
-                    bool(import_tangents),
-                    bool(merge_by_distance),
-                    float(merge_distance),
-                    bool(tris_to_quads),
-                    bool(split_submeshes),
-                )
+                    if lods_json_str is not None:
+                        entity_empty["fmp_lods_json"] = lods_json_str
+                if import_key in nsk_import_failures:
+                    continue
                 cached_entry = nsk_import_cache.get(import_key)
                 template_arm_obj = cached_entry[0] if cached_entry is not None else None
                 template_root_local = cached_entry[1] if cached_entry is not None else None
@@ -427,7 +529,7 @@ def import_map_in_steps(
 
                 if template_arm_obj is None:
                     arm_obj, _ = import_nsk(
-                        str(nsk_path),
+                        nsk_path_str,
                         import_normals=import_normals,
                         import_tangents=import_tangents,
                         merge_by_distance=merge_by_distance,
@@ -455,6 +557,8 @@ def import_map_in_steps(
                         template_arm_obj = arm_obj
                         template_root_local = arm_obj.matrix_local.copy()
                         template_collection = new_template_collection
+                    else:
+                        nsk_import_failures.add(import_key)
 
                     if (
                         use_collection_instances
@@ -495,7 +599,7 @@ def import_map_in_steps(
             yield (
                 done_steps,
                 total_steps,
-                f"[MAP] {map_name}: object {object_index + 1}/{object_count}, instance {instance_index + 1}/{max(1, len(instance_matrices))}",
+                f"[MAP] {map_name}: object {object_index + 1}/{object_count}, instance {instance_index + 1}/{instance_count}",
             )
 
     if done_steps < total_steps:
