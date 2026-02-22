@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.9
+
+- Added support for NSK and MAP/FMP import and export
+- Added icons to the import and export options and categorize them
+- Internal code clean up and refactoring
+
 ## 1.0.8
 
 - Fixed addon enable error caused by EAN/ESK circular imports (Reported by CSD59ALL on GitHub)
