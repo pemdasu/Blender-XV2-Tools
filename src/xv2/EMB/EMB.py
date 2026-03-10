@@ -8,6 +8,7 @@ from collections.abc import Callable
 import bpy
 
 from ...utils import read_cstring
+from ...utils.binary import u16, u32
 
 DDSD_LINEARSIZE = 0x80000
 DDSD_CAPS = 0x1
@@ -17,7 +18,7 @@ DDSD_PIXELFORMAT = 0x1000
 
 
 def _set_colorspace(image: bpy.types.Image, name: str) -> None:
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(AttributeError, RuntimeError, ValueError, TypeError):
         cs = image.colorspace_settings
         is_data = name in ("Non-Color", "Raw")
         cs.is_data = is_data
@@ -37,10 +38,10 @@ def _force_image_colorspace(image: bpy.types.Image, name: str) -> bpy.types.Imag
     try:
         if image.colorspace_settings.name == name:
             return image
-    except Exception:
+    except (AttributeError, RuntimeError):
         pass
     # As a last resort, duplicate the image datablock and apply the colorspace on the copy.
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(AttributeError, RuntimeError, ValueError):
         dup = image.copy()
         dup.name = f"{image.name}_cs"
         _set_colorspace(dup, name)
@@ -72,9 +73,7 @@ EMB_SIGNATURE = 1112360227
 def _normalize_source_path(path: str) -> str:
     if not path:
         return ""
-    with contextlib.suppress(Exception):
-        return os.path.normcase(os.path.normpath(os.path.abspath(path)))
-    return path
+    return os.path.normcase(os.path.normpath(os.path.abspath(path)))
 
 
 def _source_token(path: str) -> str:
@@ -102,7 +101,7 @@ def _image_matches_emb_entry(image: bpy.types.Image, source_token: str, entry_in
         image_token = str(image.get("emb_source_token", ""))
         image_index = int(image.get("emb_entry_index", -1))
         return image_token == source_token and image_index == int(entry_index)
-    except Exception:
+    except (TypeError, ValueError, RuntimeError):
         return False
 
 
@@ -158,11 +157,11 @@ def read_emb(path: str) -> EMBFile | None:
     emb.path = path
 
     # Header fields (to match LB parser)
-    emb.i_08 = struct.unpack_from("<H", view, 8)[0]
-    emb.i_10 = struct.unpack_from("<H", view, 10)[0]
-    total_entries = struct.unpack_from("<I", view, 12)[0]
-    contents_offset = struct.unpack_from("<I", view, 24)[0]
-    file_name_table_offset = struct.unpack_from("<I", view, 28)[0]
+    emb.i_08 = u16(view, 8)
+    emb.i_10 = u16(view, 10)
+    total_entries = u32(view, 12)
+    contents_offset = u32(view, 24)
+    file_name_table_offset = u32(view, 28)
     emb.use_file_names = file_name_table_offset != 0
 
     offsets: list[int] = []
@@ -171,9 +170,9 @@ def read_emb(path: str) -> EMBFile | None:
         entry_offset = contents_offset + i * 8
         if entry_offset + 8 > len(view):
             break
-        rel_offset = struct.unpack_from("<I", view, entry_offset)[0]
+        rel_offset = u32(view, entry_offset)
         data_offset = rel_offset + entry_offset
-        data_size = struct.unpack_from("<I", view, entry_offset + 4)[0]
+        data_size = u32(view, entry_offset + 4)
         offsets.append(data_offset)
         sizes.append(data_size)
 
@@ -182,7 +181,7 @@ def read_emb(path: str) -> EMBFile | None:
         for i in range(total_entries):
             noff = file_name_table_offset + 4 * i
             if noff + 4 <= len(view):
-                name_offsets.append(struct.unpack_from("<I", view, noff)[0])
+                name_offsets.append(u32(view, noff))
 
     for i in range(len(offsets)):
         entry = EMBEntry()
@@ -206,8 +205,8 @@ def load_emb_image(
     def _warn(message: str) -> None:
         if not message:
             return
-        with contextlib.suppress(Exception):
-            if warn:
+        if warn:
+            with contextlib.suppress(RuntimeError):
                 warn(message)
 
     if not entry.data:
@@ -225,25 +224,29 @@ def load_emb_image(
 
     # DDS sanity checks and patching to keep Blender happy.
     try:
-        header_size = struct.unpack_from("<I", dds_data, 4)[0]
+        header_size = u32(dds_data, 4)
         if header_size != 124:
-            _warn(f"Texture '{entry_label}' in '{emb_file}' has an invalid DDS header and was skipped.")
+            _warn(
+                f"Texture '{entry_label}' in '{emb_file}' has an invalid DDS header "
+                "and was skipped."
+            )
             return None
         fourcc = dds_data[84:88]
         allowed = {b"DXT1", b"DXT3", b"DXT5", b"BC1 ", b"BC2 ", b"BC3 ", b"BC4 ", b"BC5 ", b"ATI2"}
         if fourcc and fourcc not in allowed:
             fourcc_text = fourcc.decode("ascii", errors="replace").strip() or repr(fourcc)
             _warn(
-                f"Texture '{entry_label}' in '{emb_file}' uses unsupported DDS format '{fourcc_text}'. "
+                f"Texture '{entry_label}' in '{emb_file}' uses unsupported DDS format "
+                f"'{fourcc_text}'. "
                 "Supported: DXT1, DXT3, DXT5, BC1-BC5, ATI2."
             )
             return None
-        flags = struct.unpack_from("<I", dds_data, 8)[0]
-        height = struct.unpack_from("<I", dds_data, 12)[0]
-        width = struct.unpack_from("<I", dds_data, 16)[0]
+        flags = u32(dds_data, 8)
+        height = u32(dds_data, 12)
+        width = u32(dds_data, 16)
         is_bc1 = fourcc.strip() in (b"DXT1", b"BC1")
         block_size = 8 if is_bc1 else 16
-        linearsize = struct.unpack_from("<I", dds_data, 20)[0]
+        linearsize = u32(dds_data, 20)
         need_patch = False
         new_flags = flags
         new_linearsize = linearsize
@@ -262,8 +265,10 @@ def load_emb_image(
             struct.pack_into("<I", mutable, 8, new_flags)
             struct.pack_into("<I", mutable, 20, new_linearsize)
             dds_data = bytes(mutable)
-    except Exception:
-        _warn(f"Texture '{entry_label}' in '{emb_file}' could not be parsed as DDS and was skipped.")
+    except (struct.error, TypeError, ValueError, IndexError):
+        _warn(
+            f"Texture '{entry_label}' in '{emb_file}' could not be parsed as DDS and was skipped."
+        )
         return None
 
     image_base = base_override or (entry.name or f"EMB_{entry.index:03d}.dds")
@@ -280,7 +285,7 @@ def load_emb_image(
         if _image_matches_emb_entry(existing_img, source_token, entry.index):
             target_name = _create_image_name(clean_name, source_token, entry.index)
             if existing_img.name != target_name:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(RuntimeError, ValueError):
                     existing_img.name = target_name
             return _force_image_colorspace(existing_img, image_colorspace)
 
@@ -313,15 +318,15 @@ def load_emb_image(
         image["emb_entry_index"] = entry.index
         image["emb_entry_name"] = entry.name
         image = _force_image_colorspace(image, image_colorspace)
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(RuntimeError):
             image.pack()
-    except Exception as error:
+    except (RuntimeError, OSError, ValueError, TypeError) as error:
         print("Failed to load EMB image:", entry.name, error)
         _warn(f"Texture '{entry_label}' in '{emb_file}' failed to load in Blender and was skipped.")
         image = None
     finally:
         # Remove the temp file after packing into Blender
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
 
@@ -359,6 +364,7 @@ def _extract_dyt_lines(
 
     labels = ["p", "r", "s", "d"]
     start_line = max(0, block_index) * 4
+
     def _create_dyt_name(preferred_name: str) -> str:
         candidate = preferred_name
         token_short = (source_token or "dup")[:6]
@@ -387,7 +393,7 @@ def _extract_dyt_lines(
                 same_source = (
                     not source_token or str(existing.get("emb_source_token", "")) == source_token
                 )
-            except Exception:
+            except (AttributeError, RuntimeError, TypeError, ValueError):
                 valid_size = False
                 has_pixels = False
                 same_source = False

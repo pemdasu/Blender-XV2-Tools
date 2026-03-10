@@ -1,6 +1,7 @@
 import contextlib
 import os
 import struct
+from pathlib import Path
 
 import bpy
 
@@ -84,7 +85,7 @@ def _collect_vertex_data_for_material(
     material_index: int | None,
 ) -> tuple[list[EMD_Vertex], list[EMD_Triangles]]:
     mesh.calc_loop_triangles()
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(RuntimeError):
         mesh.calc_normals_split()
 
     # Prefer the active render UV for the primary channel; fallback to the first slot.
@@ -388,7 +389,7 @@ def _build_emd_from_object(
     return emd
 
 
-def _write_emd(emd: EMD_File, path: str):
+def _build_emd_bytes(emd: EMD_File) -> bytes:
     data = bytearray()
 
     header_size = 28
@@ -679,8 +680,12 @@ def _write_emd(emd: EMD_File, path: str):
     struct.pack_into("<I", data, 20, model_table_offset)
     struct.pack_into("<I", data, 24, model_name_table_offset)
 
-    with open(path, "wb") as handle:
-        handle.write(data)
+    return bytes(data)
+
+
+def _write_emd(emd: EMD_File, path: str):
+    data = _build_emd_bytes(emd)
+    Path(path).write_bytes(data)
 
 
 def export_selected(
@@ -702,7 +707,7 @@ def export_selected(
         try:
             _write_emd(emd, out_path)
             written.append(out_path)
-        except Exception as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             print(f"Failed to export {obj.name}: {error}")
     return written
 

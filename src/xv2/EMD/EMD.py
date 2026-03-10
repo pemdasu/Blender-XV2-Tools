@@ -1,7 +1,7 @@
-import contextlib
 import struct
 
 from ...utils import half_to_float, read_cstring
+from ...utils.binary import f32, u16, u32
 
 
 class EMD_Vertex:
@@ -132,8 +132,8 @@ def read_texture_sampler_defs(data: bytes, offset: int, count: int) -> list[EMD_
         sampler.filtering_min = filtering_byte & 0x0F
         sampler.filtering_mag = (filtering_byte >> 4) & 0x0F
 
-        sampler.scale_u = struct.unpack_from("<f", data, ptr + 4)[0]
-        sampler.scale_v = struct.unpack_from("<f", data, ptr + 8)[0]
+        sampler.scale_u = f32(data, ptr + 4)
+        sampler.scale_v = f32(data, ptr + 8)
 
         sampler_defs.append(sampler)
         ptr += 12
@@ -167,14 +167,11 @@ def sampler_def_to_prop_dict(sampler: EMD_TextureSamplerDef) -> dict:
 
 
 def set_sampler_custom_properties(target, samplers: list[EMD_TextureSamplerDef]):
-    legacy_prefixes = ("texture_sampler_def_", "emd_texture_sampler_def_")
+    sampler_prefix = "emd_texture_sampler_def_"
     for key in list(target.keys()):
-        if key.startswith(legacy_prefixes):
-            with contextlib.suppress(Exception):
-                del target[key]
-    for root_key in ("texture_sampler_defs", "emd_texture_sampler_defs"):
-        with contextlib.suppress(Exception):
-            del target[root_key]
+        if key.startswith(sampler_prefix):
+            target.pop(key, None)
+    target.pop("emd_texture_sampler_defs", None)
 
     sampler_dict = {}
     for sampler_index, sampler in enumerate(samplers):
@@ -221,15 +218,9 @@ def read_vertices(
 
         if flags & VERTEX_NORMAL:
             if is_compressed:
-                nx = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 0)[0]
-                )
-                ny = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 2)[0]
-                )
-                nz = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 4)[0]
-                )
+                nx = half_to_float(u16(data, vertex_pointer + bytes_read + 0))
+                ny = half_to_float(u16(data, vertex_pointer + bytes_read + 2))
+                nz = half_to_float(u16(data, vertex_pointer + bytes_read + 4))
                 vertex.normal = (nx, ny, nz)
                 bytes_read += get_vertex_size_from_flags(VERTEX_NORMAL | VERTEX_COMPRESSED)
             else:
@@ -238,12 +229,8 @@ def read_vertices(
 
         if flags & VERTEX_TEXUV:
             if is_compressed:
-                u = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 0)[0]
-                )
-                v = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 2)[0]
-                )
+                u = half_to_float(u16(data, vertex_pointer + bytes_read + 0))
+                v = half_to_float(u16(data, vertex_pointer + bytes_read + 2))
                 vertex.uv = (u, 1.0 - v)
                 bytes_read += get_vertex_size_from_flags(VERTEX_TEXUV | VERTEX_COMPRESSED)
             else:
@@ -253,12 +240,8 @@ def read_vertices(
 
         if flags & VERTEX_TEX2UV:
             if is_compressed:
-                u2 = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 0)[0]
-                )
-                v2 = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 2)[0]
-                )
+                u2 = half_to_float(u16(data, vertex_pointer + bytes_read + 0))
+                v2 = half_to_float(u16(data, vertex_pointer + bytes_read + 2))
                 vertex.uv2 = (u2, 1.0 - v2)
                 bytes_read += get_vertex_size_from_flags(VERTEX_TEX2UV | VERTEX_COMPRESSED)
             else:
@@ -268,15 +251,9 @@ def read_vertices(
 
         if flags & VERTEX_TANGENT:
             if is_compressed:
-                tx = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 0)[0]
-                )
-                ty = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 2)[0]
-                )
-                tz = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 4)[0]
-                )
+                tx = half_to_float(u16(data, vertex_pointer + bytes_read + 0))
+                ty = half_to_float(u16(data, vertex_pointer + bytes_read + 2))
+                tz = half_to_float(u16(data, vertex_pointer + bytes_read + 4))
                 vertex.tangent = (tx, ty, tz)
                 bytes_read += get_vertex_size_from_flags(VERTEX_TANGENT | VERTEX_COMPRESSED)
             else:
@@ -296,15 +273,9 @@ def read_vertices(
             vertex.bone_ids = [bone_id0, bone_id1, bone_id2, bone_id3]
 
             if is_compressed:
-                weight0 = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 4)[0]
-                )
-                weight1 = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 6)[0]
-                )
-                weight2 = half_to_float(
-                    struct.unpack_from("<H", data, vertex_pointer + bytes_read + 8)[0]
-                )
+                weight0 = half_to_float(u16(data, vertex_pointer + bytes_read + 4))
+                weight1 = half_to_float(u16(data, vertex_pointer + bytes_read + 6))
+                weight2 = half_to_float(u16(data, vertex_pointer + bytes_read + 8))
                 bytes_read += get_vertex_size_from_flags(VERTEX_BLENDWEIGHT | VERTEX_COMPRESSED)
             else:
                 weight0, weight1, weight2 = struct.unpack_from(
@@ -324,26 +295,23 @@ def read_vertices(
     return vertices
 
 
-def parse_emd(path: str) -> EMD_File:
-    with open(path, "rb") as file_handle:
-        data = file_handle.read()
-
-    if struct.unpack_from("<I", data, 0)[0] != EMD_SIGNATURE:
+def parse_emd_bytes(data: bytes) -> EMD_File:
+    if u32(data, 0) != EMD_SIGNATURE:
         raise ValueError("EMD_SIGNATURE not found at 0x0")
 
     emd = EMD_File()
-    emd.version = struct.unpack_from("<I", data, 8)[0]
+    emd.version = u32(data, 8)
 
-    model_table_count = struct.unpack_from("<H", data, 18)[0]
-    model_table_offset = struct.unpack_from("<I", data, 20)[0]
-    model_name_table_offset = struct.unpack_from("<I", data, 24)[0]
+    model_table_count = u16(data, 18)
+    model_table_offset = u32(data, 20)
+    model_name_table_offset = u32(data, 24)
 
     model_ptr = model_table_offset
     name_ptr = model_name_table_offset
 
     for _ in range(model_table_count):
-        model_off_rel = struct.unpack_from("<I", data, model_ptr)[0]
-        name_off = struct.unpack_from("<I", data, name_ptr)[0]
+        model_off_rel = u32(data, model_ptr)
+        name_off = u32(data, name_ptr)
 
         if model_off_rel != 0:
             model_off = model_off_rel
@@ -354,52 +322,52 @@ def parse_emd(path: str) -> EMD_File:
             else:
                 model.name = ""
 
-            mesh_count = struct.unpack_from("<H", data, model_off + 2)[0]
-            mesh_table_offset = model_off + struct.unpack_from("<I", data, model_off + 4)[0]
+            mesh_count = u16(data, model_off + 2)
+            mesh_table_offset = model_off + u32(data, model_off + 4)
             mesh_ptr = mesh_table_offset
 
             for _m in range(mesh_count):
-                mesh_off_rel = struct.unpack_from("<I", data, mesh_ptr)[0]
+                mesh_off_rel = u32(data, mesh_ptr)
                 mesh_ptr += 4
                 mesh_off = model_off + mesh_off_rel
 
                 mesh = EMD_Mesh()
 
-                name_rel = struct.unpack_from("<I", data, mesh_off + 48)[0]
+                name_rel = u32(data, mesh_off + 48)
                 if name_rel != 0:
                     mesh.name = read_cstring(data, mesh_off + name_rel)
                 else:
                     mesh.name = ""
 
-                submesh_count = struct.unpack_from("<H", data, mesh_off + 54)[0]
-                submesh_table_offset = mesh_off + struct.unpack_from("<I", data, mesh_off + 56)[0]
+                submesh_count = u16(data, mesh_off + 54)
+                submesh_table_offset = mesh_off + u32(data, mesh_off + 56)
                 sub_ptr = submesh_table_offset
 
                 for _s in range(submesh_count):
-                    sub_off_rel = struct.unpack_from("<I", data, sub_ptr)[0]
+                    sub_off_rel = u32(data, sub_ptr)
                     sub_ptr += 4
                     sub_off = mesh_off + sub_off_rel
 
                     sub = EMD_Submesh()
 
-                    sub.vertex_flags = struct.unpack_from("<I", data, sub_off + 48)[0]
-                    vertex_size = struct.unpack_from("<I", data, sub_off + 52)[0]
-                    vertex_count = struct.unpack_from("<I", data, sub_off + 56)[0]
-                    vertex_rel = struct.unpack_from("<I", data, sub_off + 60)[0]
+                    sub.vertex_flags = u32(data, sub_off + 48)
+                    vertex_size = u32(data, sub_off + 52)
+                    vertex_count = u32(data, sub_off + 56)
+                    vertex_rel = u32(data, sub_off + 60)
                     vertex_off = sub_off + vertex_rel
 
                     sub.vertices = read_vertices(
                         sub.vertex_flags, data, vertex_off, vertex_count, vertex_size
                     )
 
-                    sub_name_rel = struct.unpack_from("<I", data, sub_off + 64)[0]
+                    sub_name_rel = u32(data, sub_off + 64)
                     if sub_name_rel != 0:
                         sub.name = read_cstring(data, sub_off + sub_name_rel)
                     else:
                         sub.name = ""
 
                     texture_definition_count = data[sub_off + 69]
-                    texture_definition_rel = struct.unpack_from("<I", data, sub_off + 72)[0]
+                    texture_definition_rel = u32(data, sub_off + 72)
                     if texture_definition_count > 0 and texture_definition_rel != 0:
                         texture_definition_off = sub_off + texture_definition_rel
                         sub.texture_sampler_defs = read_texture_sampler_defs(
@@ -408,23 +376,21 @@ def parse_emd(path: str) -> EMD_File:
                             texture_definition_count,
                         )
 
-                    triangle_count = struct.unpack_from("<H", data, sub_off + 70)[0]
-                    triangles_table_offset = (
-                        sub_off + struct.unpack_from("<I", data, sub_off + 76)[0]
-                    )
+                    triangle_count = u16(data, sub_off + 70)
+                    triangles_table_offset = sub_off + u32(data, sub_off + 76)
                     tri_ptr = triangles_table_offset
 
                     for _t in range(triangle_count):
-                        tri_rel = struct.unpack_from("<I", data, tri_ptr)[0]
+                        tri_rel = u32(data, tri_ptr)
                         tri_ptr += 4
                         tri_off = sub_off + tri_rel
 
                         tri = EMD_Triangles()
 
-                        face_count = struct.unpack_from("<I", data, tri_off + 0)[0]
-                        bone_name_count = struct.unpack_from("<I", data, tri_off + 4)[0]
-                        face_table_rel = struct.unpack_from("<I", data, tri_off + 8)[0]
-                        bone_name_table_rel = struct.unpack_from("<I", data, tri_off + 12)[0]
+                        face_count = u32(data, tri_off + 0)
+                        bone_name_count = u32(data, tri_off + 4)
+                        face_table_rel = u32(data, tri_off + 8)
+                        bone_name_table_rel = u32(data, tri_off + 12)
 
                         face_ptr = tri_off + face_table_rel if face_table_rel != 0 else tri_off + 16
 
@@ -433,12 +399,12 @@ def parse_emd(path: str) -> EMD_File:
 
                         if is32:
                             for _f in range(face_count):
-                                idx = struct.unpack_from("<I", data, face_ptr)[0]
+                                idx = u32(data, face_ptr)
                                 face_ptr += 4
                                 indices.append(idx)
                         else:
                             for _f in range(face_count):
-                                idx = struct.unpack_from("<H", data, face_ptr)[0]
+                                idx = u16(data, face_ptr)
                                 face_ptr += 2
                                 indices.append(idx)
 
@@ -458,9 +424,7 @@ def parse_emd(path: str) -> EMD_File:
                         if bone_name_count > 0 and bone_name_table_rel != 0:
                             bone_name_table_off = tri_off + bone_name_table_rel
                             for bi in range(bone_name_count):
-                                name_rel = struct.unpack_from(
-                                    "<I", data, bone_name_table_off + 4 * bi
-                                )[0]
+                                name_rel = u32(data, bone_name_table_off + 4 * bi)
                                 if name_rel != 0:
                                     name_off = tri_off + name_rel
                                     bone_names.append(read_cstring(data, name_off))
@@ -480,3 +444,9 @@ def parse_emd(path: str) -> EMD_File:
         name_ptr += 4
 
     return emd
+
+
+def parse_emd(path: str) -> EMD_File:
+    with open(path, "rb") as file_handle:
+        data = file_handle.read()
+    return parse_emd_bytes(data)

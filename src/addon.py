@@ -1,15 +1,18 @@
 import contextlib
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import bpy
+import bpy.utils.previews
 from bpy.props import (
     BoolProperty,
     CollectionProperty,
+    FloatProperty,
     IntProperty,
     StringProperty,
 )
-from bpy.types import Operator
+from bpy.types import Menu, Operator
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 
 from .ui import (
@@ -36,6 +39,24 @@ from .xv2.EMD.exporter import export_selected
 from .xv2.EMD.importer import import_emd
 from .xv2.ESK.exporter import export_esk
 from .xv2.ESK.importer import import_esk
+from .xv2.FMP.exporter import export_map
+from .xv2.FMP.importer import import_map_in_steps
+from .xv2.NSK.exporter import export_nsk
+from .xv2.NSK.importer import import_nsk
+
+_custom_icons = None
+_xv2_assets_icon_id = 0
+_entry_icon_ids: dict[str, int] = {}
+_icon_dir = Path(__file__).resolve().parent / "icons"
+_xv2_assets_icon_path = _icon_dir / "DBXV2.png"
+_entry_icon_paths = {
+    "emd": _icon_dir / "icon_emd.png",
+    "esk": _icon_dir / "icon_esk.png",
+    "ean": _icon_dir / "icon_ean.png",
+    "cam": _icon_dir / "icon_cam.png",
+    "nsk": _icon_dir / "icon_nsk.png",
+    "map": _icon_dir / "icon_map.png",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -68,9 +89,29 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         name="Convert tris to quads",
         default=False,
     )
+    auto_merge_by_distance: BoolProperty(  # type: ignore
+        name="Auto Merge by Distance",
+        description="Merge nearby vertices after import",
+        default=True,
+    )
+    merge_distance: FloatProperty(  # type: ignore
+        name="Merge Distance",
+        description="Distance threshold used by Auto Merge by Distance",
+        default=0.0001,
+        min=0.0,
+        soft_max=0.01,
+        precision=4,
+        subtype="DISTANCE",
+        unit="LENGTH",
+    )
     split_into_submeshes: BoolProperty(  # type: ignore
         name="Split into submeshes",
         default=False,
+    )
+    reuse_materials: BoolProperty(  # type: ignore
+        name="Reuse Materials",
+        description="Reuse existing materials by name when the shader template matches",
+        default=True,
     )
     preserve_structure: BoolProperty(  # type: ignore
         name="Preserve EMD hierarchy (empties)",
@@ -97,6 +138,10 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         layout.prop(self, "import_tangents")
         layout.prop(self, "dyt_entry_index")
         layout.prop(self, "tris_to_quads")
+        layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "reuse_materials")
+        if self.auto_merge_by_distance:
+            layout.prop(self, "merge_distance")
         if not self.auto_detect_esk:
             layout.label(text="Tip: select an .esk in the file browser.")
 
@@ -140,14 +185,15 @@ class IMPORT_OT_emd(Operator, ImportHelper):
                 esk_path,
                 self.import_custom_normals,
                 self.import_tangents,
-                True,  # Merge by Distance
-                0.0001,  # Merge Distance
+                self.auto_merge_by_distance,
+                self.merge_distance,
                 self.tris_to_quads,
                 self.split_into_submeshes,
                 shared_armature=shared,
                 return_armature=True,
                 preserve_structure=self.preserve_structure,
                 dyt_entry_index=self.dyt_entry_index,
+                reuse_materials=self.reuse_materials,
                 warn=lambda msg: self.report({"WARNING"}, msg),
             )
 
@@ -158,6 +204,291 @@ class IMPORT_OT_emd(Operator, ImportHelper):
                 link_scd_armatures(arm_obj, main_arm_obj)
 
         return {"FINISHED"}
+
+
+# ---------------------------------------------------------------------------
+# NSK Import (.NSK container)
+# ---------------------------------------------------------------------------
+class IMPORT_OT_nsk(Operator, ImportHelper):
+    bl_idname = "import_scene.xv2_nsk"
+    bl_label = "Import NSK (Xenoverse 2)"
+
+    files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement)  # type: ignore
+    directory: StringProperty(subtype="DIR_PATH")  # type: ignore
+
+    filename_ext = ".nsk"
+    filter_glob: StringProperty(default="*.nsk", options={"HIDDEN"})  # type: ignore
+
+    import_custom_normals: BoolProperty(  # type: ignore
+        name="Import custom split normals",
+        description=("Use normals stored in the embedded EMD file."),
+        default=True,
+    )
+    import_tangents: BoolProperty(  # type: ignore
+        name="Import tangents (if present)",
+        default=False,
+    )
+    tris_to_quads: BoolProperty(  # type: ignore
+        name="Convert tris to quads",
+        default=False,
+    )
+    auto_merge_by_distance: BoolProperty(  # type: ignore
+        name="Auto Merge by Distance",
+        description="Merge nearby vertices after import",
+        default=True,
+    )
+    merge_distance: FloatProperty(  # type: ignore
+        name="Merge Distance",
+        description="Distance threshold used by Auto Merge by Distance",
+        default=0.0001,
+        min=0.0,
+        soft_max=0.01,
+        precision=4,
+        subtype="DISTANCE",
+        unit="LENGTH",
+    )
+    split_into_submeshes: BoolProperty(  # type: ignore
+        name="Split into submeshes",
+        default=True,
+    )
+    reuse_materials: BoolProperty(  # type: ignore
+        name="Reuse Materials",
+        description="Reuse existing materials by name when the shader template matches",
+        default=True,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "import_custom_normals")
+        layout.prop(self, "import_tangents")
+        layout.prop(self, "tris_to_quads")
+        layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "reuse_materials")
+        if self.auto_merge_by_distance:
+            layout.prop(self, "merge_distance")
+
+    def execute(self, context):
+        paths: list[str] = []
+        if self.files:
+            for file_entry in self.files:
+                paths.append(os.path.join(self.directory, file_entry.name))
+        else:
+            paths.append(self.filepath)
+
+        if not paths:
+            self.report({"ERROR"}, "Select one or more .nsk files to import.")
+            return {"CANCELLED"}
+
+        for path in paths:
+            import_nsk(
+                path,
+                self.import_custom_normals,
+                self.import_tangents,
+                self.auto_merge_by_distance,
+                self.merge_distance,
+                self.tris_to_quads,
+                self.split_into_submeshes,
+                return_armature=False,
+                reuse_materials=self.reuse_materials,
+                warn=lambda msg: self.report({"WARNING"}, msg),
+            )
+
+        return {"FINISHED"}
+
+
+# ---------------------------------------------------------------------------
+# FMP MAP Import (.MAP)
+# ---------------------------------------------------------------------------
+class IMPORT_OT_map(Operator, ImportHelper):
+    bl_idname = "import_scene.xv2_map"
+    bl_label = "Import MAP (Xenoverse 2)"
+
+    files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement)  # type: ignore
+    directory: StringProperty(subtype="DIR_PATH")  # type: ignore
+
+    filename_ext = ".map"
+    filter_glob: StringProperty(default="*.map", options={"HIDDEN"})  # type: ignore
+
+    import_custom_normals: BoolProperty(  # type: ignore
+        name="Import custom split normals",
+        description=("Use normals stored in embedded NSK EMDs."),
+        default=True,
+    )
+    import_tangents: BoolProperty(  # type: ignore
+        name="Import tangents (if present)",
+        default=False,
+    )
+    tris_to_quads: BoolProperty(  # type: ignore
+        name="Convert tris to quads",
+        default=False,
+    )
+    auto_merge_by_distance: BoolProperty(  # type: ignore
+        name="Auto Merge by Distance",
+        description="Merge nearby vertices after import",
+        default=True,
+    )
+    merge_distance: FloatProperty(  # type: ignore
+        name="Merge Distance",
+        description="Distance threshold used by Auto Merge by Distance",
+        default=0.0001,
+        min=0.0,
+        soft_max=0.01,
+        precision=4,
+        subtype="DISTANCE",
+        unit="LENGTH",
+    )
+    split_into_submeshes: BoolProperty(  # type: ignore
+        name="Split into submeshes",
+        default=True,
+    )
+    reuse_materials: BoolProperty(  # type: ignore
+        name="Reuse Materials",
+        description="Reuse existing materials by name when the shader template matches",
+        default=True,
+    )
+    import_colliders: BoolProperty(  # type: ignore
+        name="Import colliders",
+        description="Create collider empties and collider custom properties",
+        default=True,
+    )
+    import_collision_meshes: BoolProperty(  # type: ignore
+        name="Import collider meshes",
+        description="Create mesh objects from collision vertex/index data",
+        default=True,
+    )
+    use_collection_instances: BoolProperty(  # type: ignore
+        name="Use collection instances (faster)",
+        description=(
+            "Reuse imported NSK scenes as Blender collection instances. Faster and lighter, "
+            "but less direct per-instance mesh editing"
+        ),
+        default=False,
+    )
+    _timer = None
+    _paths: list[str]
+    _next_path_index: int
+    _active_path_index: int
+    _active_path: str
+    _active_iterator: Iterator[tuple[int, int, str]] | None
+    _imported_count: int
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "import_custom_normals")
+        layout.prop(self, "import_tangents")
+        layout.prop(self, "tris_to_quads")
+        layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "reuse_materials")
+        if self.auto_merge_by_distance:
+            layout.prop(self, "merge_distance")
+        layout.prop(self, "import_colliders")
+        if self.import_colliders:
+            layout.prop(self, "import_collision_meshes")
+        layout.prop(self, "use_collection_instances")
+
+    def _cleanup_modal(self, context):
+        wm = context.window_manager
+        if self._timer is not None:
+            wm.event_timer_remove(self._timer)
+            self._timer = None
+        wm.progress_end()
+        context.window.cursor_set("DEFAULT")
+        with contextlib.suppress(AttributeError, RuntimeError):
+            context.workspace.status_text_set(None)
+
+    def _start_next_import(self, context) -> bool:
+        if self._next_path_index >= len(self._paths):
+            return False
+
+        self._active_path_index = self._next_path_index
+        self._active_path = self._paths[self._active_path_index]
+        self._next_path_index += 1
+        self._active_iterator = import_map_in_steps(
+            self._active_path,
+            import_normals=self.import_custom_normals,
+            import_tangents=self.import_tangents,
+            merge_by_distance=self.auto_merge_by_distance,
+            merge_distance=self.merge_distance,
+            tris_to_quads=self.tris_to_quads,
+            split_submeshes=self.split_into_submeshes,
+            import_colliders=self.import_colliders,
+            import_collision_meshes=self.import_collision_meshes,
+            use_collection_instances=self.use_collection_instances,
+            reuse_materials=self.reuse_materials,
+            warn=lambda msg: self.report({"WARNING"}, msg),
+        )
+        print(f"[XV2 MAP] Importing {os.path.basename(self._active_path)}...")
+        return True
+
+    def modal(self, context, event):
+        if event.type == "ESC":
+            self._cleanup_modal(context)
+            self.report({"WARNING"}, "MAP import cancelled.")
+            print("[XV2 MAP] Import cancelled.")
+            return {"CANCELLED"}
+
+        if event.type != "TIMER":
+            return {"RUNNING_MODAL"}
+
+        if self._active_iterator is None and not self._start_next_import(context):
+            self._cleanup_modal(context)
+            if self._imported_count == 0:
+                self.report({"WARNING"}, "No MAP files were imported.")
+                return {"CANCELLED"}
+            self.report({"INFO"}, f"Imported {self._imported_count} MAP file(s).")
+            print(f"[XV2 MAP] Finished. Imported {self._imported_count} file(s).")
+            return {"FINISHED"}
+
+        try:
+            done_steps, total_steps, message = next(self._active_iterator)
+            path_progress = (float(done_steps) / float(total_steps)) if total_steps > 0 else 1.0
+            overall_progress = float(self._active_path_index) + max(0.0, min(1.0, path_progress))
+            context.window_manager.progress_update(overall_progress)
+            with contextlib.suppress(AttributeError, RuntimeError):
+                context.workspace.status_text_set(message)
+            return {"RUNNING_MODAL"}
+        except StopIteration as stop:
+            if stop.value is not None:
+                self._imported_count += 1
+            context.window_manager.progress_update(float(self._next_path_index))
+            self._active_iterator = None
+            return {"RUNNING_MODAL"}
+        except (RuntimeError, OSError, ValueError, TypeError) as exc:
+            self._cleanup_modal(context)
+            self.report(
+                {"ERROR"},
+                f"Failed to import MAP {os.path.basename(self._active_path)}: {exc}",
+            )
+            print(f"[XV2 MAP] Failed to import {os.path.basename(self._active_path)}: {exc}")
+            return {"CANCELLED"}
+
+    def execute(self, context):
+        paths: list[str] = []
+        if self.files:
+            for file_entry in self.files:
+                paths.append(os.path.join(self.directory, file_entry.name))
+        else:
+            paths.append(self.filepath)
+
+        if not paths:
+            self.report({"ERROR"}, "Select one or more .map files to import.")
+            return {"CANCELLED"}
+
+        self._paths = paths
+        self._next_path_index = 0
+        self._active_path_index = 0
+        self._active_path = ""
+        self._active_iterator = None
+        self._imported_count = 0
+
+        wm = context.window_manager
+        wm.progress_begin(0.0, float(len(paths)))
+        context.window.cursor_set("WAIT")
+        with contextlib.suppress(AttributeError, RuntimeError):
+            context.workspace.status_text_set("[MAP] Starting import...")
+        self._timer = wm.event_timer_add(0.01, window=context.window)
+        wm.modal_handler_add(self)
+        return {"RUNNING_MODAL"}
 
 
 # ---------------------------------------------------------------------------
@@ -233,44 +564,170 @@ class EXPORT_OT_emd(Operator, ExportHelper):
         return {"FINISHED"}
 
 
+class EXPORT_OT_nsk(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_nsk"
+    bl_label = "Export NSK (Xenoverse 2)"
+
+    filename_ext = ".nsk"
+    filter_glob: StringProperty(default="*.nsk", options={"HIDDEN"})  # type: ignore
+
+    def execute(self, context):
+        arm = context.object if context.object and context.object.type == "ARMATURE" else None
+        if arm is None:
+            self.report({"ERROR"}, "Select an armature to export.")
+            return {"CANCELLED"}
+        ok, error = export_nsk(self.filepath, arm)
+        if ok:
+            self.report({"INFO"}, "Exported NSK")
+            return {"FINISHED"}
+        self.report({"ERROR"}, error or "Failed to export NSK.")
+        return {"CANCELLED"}
+
+
+class EXPORT_OT_map(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_map"
+    bl_label = "Export MAP (Xenoverse 2)"
+
+    filename_ext = ".map"
+    filter_glob: StringProperty(default="*.map", options={"HIDDEN"})  # type: ignore
+    export_collision_meshes: BoolProperty(  # type: ignore
+        name="Export collision meshes (EXPERIMENTAL)",
+        description=(
+            "Write edited collider mesh vertices/triangles back into source MAP collision data "
+            "when possible"
+        ),
+        default=False,
+    )
+    export_linked_nsk: BoolProperty(  # type: ignore
+        name="Export linked NSK files (EXPERIMENTAL)",
+        description=(
+            "Also export NSK files referenced by MAP entities using their MAP relative paths"
+        ),
+        default=False,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "export_collision_meshes")
+        layout.prop(self, "export_linked_nsk")
+
+    def execute(self, context):
+        selected = context.object
+        map_root = None
+        if selected is not None:
+            if selected.get("fmp_source_path"):
+                map_root = selected
+            elif selected.parent and selected.parent.get("fmp_source_path"):
+                map_root = selected.parent
+
+        ok, error = export_map(
+            self.filepath,
+            map_root=map_root,
+            export_collision_meshes=self.export_collision_meshes,
+            export_linked_nsk=self.export_linked_nsk,
+            warn=lambda msg: self.report({"WARNING"}, msg),
+        )
+        if ok:
+            self.report({"INFO"}, "Exported MAP")
+            return {"FINISHED"}
+        self.report({"ERROR"}, error or "Failed to export MAP.")
+        return {"CANCELLED"}
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
-def menu_func(self, context):
-    self.layout.operator(
-        IMPORT_OT_emd.bl_idname,
-        text="Dragon Ball XV2 EMD (.emd)",
-    )
-    self.layout.operator(
-        IMPORT_OT_esk.bl_idname,
-        text="Dragon Ball XV2 ESK (.esk)",
-    )
-    self.layout.operator(
-        IMPORT_OT_ean.bl_idname,
-        text="Dragon Ball XV2 EAN (.ean)",
-    )
-    self.layout.operator(
-        IMPORT_OT_cam_ean.bl_idname,
-        text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+class XV2_MT_import_assets(Menu):
+    bl_idname = "TOPBAR_MT_xv2_import_assets"
+    bl_label = "Dragon Ball XV2 Assets"
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.operator(
+            IMPORT_OT_emd.bl_idname,
+            text="Dragon Ball XV2 EMD (.emd)",
+            icon_value=_entry_icon_ids["emd"],
+        )
+        layout.operator(
+            IMPORT_OT_esk.bl_idname,
+            text="Dragon Ball XV2 ESK (.esk)",
+            icon_value=_entry_icon_ids["esk"],
+        )
+        layout.operator(
+            IMPORT_OT_ean.bl_idname,
+            text="Dragon Ball XV2 EAN (.ean)",
+            icon_value=_entry_icon_ids["ean"],
+        )
+        layout.operator(
+            IMPORT_OT_cam_ean.bl_idname,
+            text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+            icon_value=_entry_icon_ids["cam"],
+        )
+        layout.separator()
+        layout.operator(
+            IMPORT_OT_nsk.bl_idname,
+            text="Dragon Ball XV2 NSK (.nsk)",
+            icon_value=_entry_icon_ids["nsk"],
+        )
+        layout.operator(
+            IMPORT_OT_map.bl_idname,
+            text="Dragon Ball XV2 MAP (.map)",
+            icon_value=_entry_icon_ids["map"],
+        )
+
+
+class XV2_MT_export_assets(Menu):
+    bl_idname = "TOPBAR_MT_xv2_export_assets"
+    bl_label = "Dragon Ball XV2 Assets"
+
+    def draw(self, _context):
+        layout = self.layout
+        layout.operator(
+            EXPORT_OT_emd.bl_idname,
+            text="Dragon Ball XV2 EMD (.emd)",
+            icon_value=_entry_icon_ids["emd"],
+        )
+        layout.operator(
+            EXPORT_OT_esk.bl_idname,
+            text="Dragon Ball XV2 ESK (.esk)",
+            icon_value=_entry_icon_ids["esk"],
+        )
+        layout.operator(
+            EXPORT_OT_ean.bl_idname,
+            text="Dragon Ball XV2 EAN (.ean)",
+            icon_value=_entry_icon_ids["ean"],
+        )
+        layout.operator(
+            EXPORT_OT_cam_ean.bl_idname,
+            text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+            icon_value=_entry_icon_ids["cam"],
+        )
+        layout.separator()
+        layout.operator(
+            EXPORT_OT_nsk.bl_idname,
+            text="Dragon Ball XV2 NSK (.nsk)",
+            icon_value=_entry_icon_ids["nsk"],
+        )
+        layout.operator(
+            EXPORT_OT_map.bl_idname,
+            text="Dragon Ball XV2 MAP (.map)",
+            icon_value=_entry_icon_ids["map"],
+        )
+
+
+def menu_func(self, _context):
+    self.layout.menu(
+        XV2_MT_import_assets.bl_idname,
+        text="Dragon Ball XV2 Assets",
+        icon_value=_xv2_assets_icon_id,
     )
 
 
-def menu_func_export(self, context):
-    self.layout.operator(
-        EXPORT_OT_emd.bl_idname,
-        text="Dragon Ball XV2 EMD (.emd)",
-    )
-    self.layout.operator(
-        EXPORT_OT_esk.bl_idname,
-        text="Dragon Ball XV2 ESK (.esk)",
-    )
-    self.layout.operator(
-        EXPORT_OT_ean.bl_idname,
-        text="Dragon Ball XV2 EAN (.ean)",
-    )
-    self.layout.operator(
-        EXPORT_OT_cam_ean.bl_idname,
-        text="Dragon Ball XV2 Camera EAN (.cam.ean)",
+def menu_func_export(self, _context):
+    self.layout.menu(
+        XV2_MT_export_assets.bl_idname,
+        text="Dragon Ball XV2 Assets",
+        icon_value=_xv2_assets_icon_id,
     )
 
 
@@ -370,14 +827,20 @@ classes = [
     EMD_OT_texture_sampler_sync_props,
     VIEW3D_PT_emd_texture_samplers,
     PROPERTIES_PT_emd_texture_samplers,
+    XV2_MT_import_assets,
+    XV2_MT_export_assets,
     SCDLinkSettings,
     VIEW3D_PT_scd_link,
     XV2_OT_scd_link_to_armature,
     IMPORT_OT_emd,
+    IMPORT_OT_nsk,
+    IMPORT_OT_map,
     IMPORT_OT_esk,
     IMPORT_OT_cam_ean,
     IMPORT_OT_ean,
     EXPORT_OT_emd,
+    EXPORT_OT_nsk,
+    EXPORT_OT_map,
     EXPORT_OT_esk,
     EXPORT_OT_ean,
     EXPORT_OT_cam_ean,
@@ -394,17 +857,34 @@ def _register_class(cls):
         bpy.utils.register_class(cls)
     except ValueError:
         # If already registered (e.g., after a reload), unregister and try again.
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(RuntimeError):
             bpy.utils.unregister_class(cls)
         bpy.utils.register_class(cls)
 
 
 def _unregister_class(cls):
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(RuntimeError):
         bpy.utils.unregister_class(cls)
 
 
 def register():
+    global _custom_icons, _xv2_assets_icon_id, _entry_icon_ids
+
+    if not _xv2_assets_icon_path.is_file():
+        raise FileNotFoundError(f"Missing required icon file: {_xv2_assets_icon_path}")
+    for icon_key, icon_path in _entry_icon_paths.items():
+        if not icon_path.is_file():
+            raise FileNotFoundError(f"Missing required icon file: {icon_path} ({icon_key})")
+
+    _custom_icons = bpy.utils.previews.new()
+    _custom_icons.load("xv2_assets", str(_xv2_assets_icon_path), "IMAGE")
+    _xv2_assets_icon_id = int(_custom_icons["xv2_assets"].icon_id)
+    _entry_icon_ids = {}
+    for icon_key, icon_path in _entry_icon_paths.items():
+        icon_name = f"xv2_{icon_key}"
+        _custom_icons.load(icon_name, str(icon_path), "IMAGE")
+        _entry_icon_ids[icon_key] = int(_custom_icons[icon_name].icon_id)
+
     for cls in classes:
         _register_class(cls)
 
@@ -424,6 +904,8 @@ def register():
 
 
 def unregister():
+    global _custom_icons, _xv2_assets_icon_id, _entry_icon_ids
+
     bpy.types.TOPBAR_MT_file_import.remove(menu_func)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
 
@@ -435,6 +917,12 @@ def unregister():
     del bpy.types.Scene.xv2_cam_props
     del bpy.types.Camera.xv2_fov
     del bpy.types.Camera.xv2_roll
+
+    if _custom_icons is not None:
+        bpy.utils.previews.remove(_custom_icons)
+    _custom_icons = None
+    _xv2_assets_icon_id = 0
+    _entry_icon_ids = {}
 
     for cls in reversed(classes):
         _unregister_class(cls)

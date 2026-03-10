@@ -243,10 +243,9 @@ class XV2_OT_cam_create_actions(bpy.types.Operator):
         # Make sure FOV/Roll curves exist on data action for the current frame
         frame = context.scene.frame_current
         for prop_name in ("xv2_fov", "xv2_roll"):
-            try:
-                value = getattr(cam_obj.data, prop_name)
-            except Exception:
+            if not hasattr(cam_obj.data, prop_name):
                 continue
+            value = getattr(cam_obj.data, prop_name)
             fc = data_action.fcurves.find(prop_name)
             if fc is None:
                 fc = data_action.fcurves.new(prop_name)

@@ -19,6 +19,7 @@ from .EMD import (
     EMD_Vertex,
     get_vertex_size_from_flags,
     parse_emd,
+    parse_emd_bytes,
     read_texture_sampler_defs,
     read_vertices,
     sampler_def_to_prop_dict,
@@ -50,4 +51,5 @@ __all__ = [
     "set_sampler_custom_properties",
     "read_vertices",
     "parse_emd",
+    "parse_emd_bytes",
 ]

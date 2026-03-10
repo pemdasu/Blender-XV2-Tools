@@ -1,8 +1,8 @@
-import contextlib
 import math
 import secrets
 import struct
 from collections.abc import Sequence
+from pathlib import Path
 
 import bpy
 
@@ -248,7 +248,8 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
         frame_count = max(frames) + 1
         use_16bit_indices = frame_count > 255
 
-        # Temporarily assign actions so we can sample evaluated transforms (visual keying) without baking.
+        # Temporarily assign actions so we can sample evaluated transforms (visual keying)
+        # without baking.
         cam_anim_data = cam_obj.animation_data or cam_obj.animation_data_create()
         orig_cam_action = cam_anim_data.action
         cam_anim_data.action = cam_action
@@ -281,7 +282,7 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
 
         for frame in sorted(frames):
             scene.frame_set(frame)
-            with contextlib.suppress(Exception):
+            if hasattr(bpy.context.view_layer, "update"):
                 bpy.context.view_layer.update()
 
             cam_eval = cam_obj.evaluated_get(depsgraph)
@@ -384,8 +385,7 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
             end = names_blob.find(b"\x00", off)
             out.extend(names_blob[off : end + 1])
 
-    with open(filepath, "wb") as file_handle:
-        file_handle.write(out)
+    Path(filepath).write_bytes(out)
     return True
 
 

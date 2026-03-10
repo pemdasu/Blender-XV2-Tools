@@ -15,15 +15,29 @@ from ..EMB import (
     emb_stem_from_path,
     load_emb_image,
     locate_emb_files,
+    read_emb,
 )
 from ..EMM import locate_emm, parse_emm
 from ..ESK import ESK_File, build_armature, parse_esk
-from .EMD import (
-    EMD_File,
-    EMD_Submesh,
-    parse_emd,
-    set_sampler_custom_properties,
+from ..NSK.importer import (
+    apply_nsk_placeholder_material as _apply_nsk_placeholder_material,
 )
+from ..NSK.importer import (
+    emd_has_any_triangle_bones as _emd_has_any_triangle_bones,
+)
+from ..NSK.importer import (
+    find_armature_bone as _find_armature_bone,
+)
+from ..NSK.importer import (
+    get_esk_world_matrix_by_bone_name as _get_esk_world_matrix_by_bone_name,
+)
+from ..NSK.importer import (
+    resolve_source_behavior as _resolve_source_behavior,
+)
+from ..NSK.importer import (
+    submesh_has_blend_weights as _submesh_has_blend_weights,
+)
+from .EMD import EMD_File, EMD_Submesh, parse_emd, set_sampler_custom_properties
 
 AUTO_SMOOTH_ANGLE_DEGREES = 30.0
 
@@ -131,13 +145,29 @@ def _get_shader_template(template_name: str = "shader") -> bpy.types.Material | 
             if isinstance(mat, str):
                 mat = bpy.data.materials.get(mat)
             return mat
-    except Exception as exc:
+    except (OSError, RuntimeError, ReferenceError, ValueError) as exc:
         print("Failed to load shader template:", exc)
     return None
 
 
-def _instantiate_shader_material(name: str) -> bpy.types.Material:
-    template_name = "eye_shader" if name and name.lower().startswith("eye_") else "shader"
+def _make_shader_material(
+    name: str,
+    template_name: str | None = None,
+    reuse_materials: bool = True,
+) -> bpy.types.Material:
+    material_name = name or "EMD_Material"
+    if not template_name:
+        template_name = "eye_shader" if name and name.lower().startswith("eye_") else "shader"
+
+    # Reuse existing material when enabled to avoid Blender auto-suffixes.
+    existing = bpy.data.materials.get(material_name)
+    if (
+        reuse_materials
+        and existing is not None
+        and str(existing.get("_xv2_shader_template_name", "")) == template_name
+    ):
+        return existing
+
     template = _get_shader_template(template_name)
     # If the cached template was removed, refresh the cache and try again.
     try:
@@ -155,16 +185,36 @@ def _instantiate_shader_material(name: str) -> bpy.types.Material:
             template = _get_shader_template(template_name)
             mat = template.copy() if template else None
         if mat:
-            mat.name = name or template.name
+            mat.name = material_name
             mat.use_fake_user = False
             mat["_xv2_shader_template"] = True
+            mat["_xv2_shader_template_name"] = template_name
             return mat
-    material = bpy.data.materials.new(name=name or "EMD_Material")
+    material = bpy.data.materials.new(name=material_name)
     material.use_nodes = True
+    material["_xv2_shader_template_name"] = template_name
     if material.node_tree:
         material.node_tree.nodes.clear()
         material.node_tree.links.clear()
     return material
+
+
+def _resolve_shader_template(
+    submesh_name: str,
+    source_format: str = "EMD",
+    emm_shader: str | None = None,
+    force_shader_template: str | None = None,
+) -> str:
+    if force_shader_template:
+        return force_shader_template
+    shader_name = (emm_shader or "").strip().upper()
+    if "UNIF_ENV" in shader_name:
+        return "unif_env_shader"
+    format_tag = (source_format or "EMD").strip().upper()
+    # Hook for format-specific shader defaults.
+    if format_tag == "NSK":
+        return "shader"
+    return "eye_shader" if submesh_name and submesh_name.lower().startswith("eye_") else "shader"
 
 
 def bind_weights_built(
@@ -227,8 +277,24 @@ def bind_weights_built(
     modifier.show_on_cage = True
 
 
-def create_material(submesh_name: str) -> bpy.types.Material:
-    return _instantiate_shader_material(submesh_name)
+def create_material(
+    submesh_name: str,
+    source_format: str = "EMD",
+    emm_shader: str | None = None,
+    force_shader_template: str | None = None,
+    reuse_materials: bool = True,
+) -> bpy.types.Material:
+    template_name = _resolve_shader_template(
+        submesh_name=submesh_name,
+        source_format=source_format,
+        emm_shader=emm_shader,
+        force_shader_template=force_shader_template,
+    )
+    return _make_shader_material(
+        submesh_name,
+        template_name=template_name,
+        reuse_materials=reuse_materials,
+    )
 
 
 def _image_from_sampler(
@@ -275,7 +341,7 @@ def _apply_shader_material(
     def _remove_image(image: bpy.types.Image | None) -> None:
         if image is None:
             return
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(RuntimeError):
             bpy.data.images.remove(image, do_unlink=True)
 
     nodes = mat.node_tree.nodes
@@ -286,6 +352,8 @@ def _apply_shader_material(
     msk_node = nodes.get("XV2_MSK_EMB_SAMPLER")
     dual_toggle = nodes.get("XV2_DUAL_EMB_TOGGLE")
     msk_toggle = nodes.get("XV2_MSK_EMB_TOGGLE")
+    shader_name = (getattr(emm_info, "shader", "") or "").upper()
+    use_unif_env = "UNIF_ENV" in shader_name
 
     main_img = _image_from_sampler(sampler_defs, 0, emb_main, warn=warn)
     dual_img = _image_from_sampler(sampler_defs, 2, emb_main, warn=warn)
@@ -297,23 +365,26 @@ def _apply_shader_material(
             tex_node.projection = "FLAT"
             tex_node.extension = "EXTEND" if is_dyt else "REPEAT"
             if not is_dyt and img and hasattr(img, "colorspace_settings"):
-                img.colorspace_settings.name = "Non-Color"
-        except Exception:
+                img.colorspace_settings.name = "Non-Color" if not use_unif_env else "sRGB"
+        except (AttributeError, TypeError, ValueError):
             pass
 
     if emb_node and main_img:
         _configure_image(emb_node, main_img, is_dyt=False)
+        if use_unif_env:
+            with contextlib.suppress(AttributeError, TypeError, ValueError):
+                emb_node.extension = "EXTEND"
     use_dual = dual_img is not None and emm_info and "d2_" in (emm_info.shader or "")
     if dual_node and dual_img and use_dual:
         _configure_image(dual_node, dual_img, is_dyt=False)
     if dual_toggle and hasattr(dual_toggle, "inputs"):
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(TypeError, ValueError, AttributeError, KeyError):
             dual_toggle.inputs[0].default_value = 1.0 if use_dual else 0.0
     use_msk = dual_img is not None and emm_info and "MSK" in (emm_info.shader or "")
     if msk_node and dual_img and use_msk:
         _configure_image(msk_node, dual_img, is_dyt=False)
     if msk_toggle and hasattr(msk_toggle, "inputs"):
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(TypeError, ValueError, AttributeError, KeyError):
             msk_toggle.inputs[0].default_value = 1.0 if use_msk else 0.0
 
     # Apply DYT lines based on MatScale1X (default 0)
@@ -321,12 +392,12 @@ def _apply_shader_material(
     if emm_info:
         for param in emm_info.params:
             if param.name == "MatScale1X":
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(TypeError, ValueError):
                     mat_scale = int(round(float(param.value)))
                 break
     # Fallback: use custom prop on material if present
     if mat_scale == 0 and "emm_param_MatScale1X" in mat:
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(TypeError, ValueError):
             mat_scale = int(round(float(mat.get("emm_param_MatScale1X", 0))))
 
     if emb_dyt:
@@ -394,14 +465,40 @@ def _apply_shader_material(
                 continue
             try:
                 val = float(param.value)
-            except Exception:
+            except (TypeError, ValueError):
                 continue
             if param.name in group_node.inputs:
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(TypeError, ValueError, AttributeError):
                     group_node.inputs[param.name].default_value = val
 
     _apply_params_to_group("XV2_BASIC_SHADER")
     _apply_params_to_group("XV2_BASIC_EYE_SHADER")
+    _apply_params_to_group("TOON_UNIF_ENV")
+
+
+def _validate_face_indices(
+    i0: int,
+    i1: int,
+    i2: int,
+    *,
+    strict_face_indices: bool,
+    max_index: int,
+) -> list[int] | None:
+    if strict_face_indices:
+        if i0 < 0 or i0 > max_index or i1 < 0 or i1 > max_index or i2 < 0 or i2 > max_index:
+            return None
+        face_indices = [i0, i1, i2]
+    else:
+        face_indices = [
+            max(0, min(i0, max_index)),
+            max(0, min(i1, max_index)),
+            max(0, min(i2, max_index)),
+        ]
+
+    if face_indices[0] in (face_indices[1], face_indices[2]) or face_indices[1] == face_indices[2]:
+        return None
+
+    return face_indices
 
 
 def import_emd(
@@ -418,6 +515,14 @@ def import_emd(
     preserve_structure: bool = False,
     dyt_entry_index: int = 0,
     warn: Callable[[str], None] | None = None,
+    preloaded_emd: EMD_File | None = None,
+    preloaded_esk: ESK_File | None = None,
+    source_format: str = "EMD",
+    disable_dyt: bool = False,
+    force_shader_template: str | None = None,
+    reuse_materials: bool = True,
+    emb_override: str = "",
+    emm_override: str = "",
 ):
     warned_messages: set[str] = set()
 
@@ -430,9 +535,63 @@ def import_emd(
         else:
             print("Warning:", message)
 
-    emd: EMD_File = parse_emd(path)
-    emb_main, emb_dyt = locate_emb_files(path)
-    emm_path = locate_emm(path)
+    source_tag, source_behavior = _resolve_source_behavior(source_format)
+    if source_behavior.disable_dyt_default:
+        disable_dyt = True
+    if source_behavior.preserve_structure_default:
+        preserve_structure = True
+
+    emd: EMD_File = preloaded_emd if preloaded_emd is not None else parse_emd(path)
+    nsk_has_bones_entries = source_tag == "NSK" and _emd_has_any_triangle_bones(emd)
+    nsk_use_rigid_model_placement = source_tag == "NSK" and not nsk_has_bones_entries
+    emb_main = None
+    emb_dyt = None
+    emb_override_path = (emb_override or "").strip()
+    if emb_override_path:
+        if os.path.isfile(emb_override_path):
+            emb_main = read_emb(emb_override_path)
+            if emb_main is None:
+                _warn_once(
+                    f"Failed to parse EMB override '{os.path.basename(emb_override_path)}'. "
+                    "Falling back to default EMB lookup."
+                )
+            elif not disable_dyt:
+                emb_dyt_candidates = [
+                    f"{os.path.splitext(emb_override_path)[0]}_dyt.emb",
+                    f"{os.path.splitext(emb_override_path)[0]}.dyt.emb",
+                ]
+                for candidate in emb_dyt_candidates:
+                    if os.path.isfile(candidate):
+                        emb_dyt = read_emb(candidate)
+                        if emb_dyt is not None:
+                            break
+        else:
+            _warn_once(
+                f"EMB override was not found: '{emb_override_path}'. "
+                "Falling back to default EMB lookup."
+            )
+
+    if emb_main is None:
+        emb_main, emb_dyt = locate_emb_files(path)
+
+    if disable_dyt and emb_dyt is not None:
+        _warn_once("DYT textures are disabled for this import format; skipping DYT lookup.")
+        emb_dyt = None
+
+    emm_override_path = (emm_override or "").strip()
+    emm_path = ""
+    if emm_override_path:
+        if os.path.isfile(emm_override_path):
+            emm_path = emm_override_path
+        else:
+            _warn_once(
+                f"EMM override was not found: '{emm_override_path}'. "
+                "Falling back to default EMM lookup."
+            )
+
+    if not emm_path:
+        emm_path = locate_emm(path) or ""
+
     emm_materials = parse_emm(emm_path) if emm_path else []
     emm_by_name = {mat.name.lower(): mat for mat in emm_materials}
 
@@ -450,47 +609,87 @@ def import_emd(
     esk_path = ""
     esk_candidates = [stem_esk, preferred_esk, alt_esk]
 
-    esk: ESK_File | None = None
+    esk: ESK_File | None = preloaded_esk
     arm_obj = shared_armature
 
-    if esk_override and os.path.exists(esk_override):
-        esk_path = esk_override
-    else:
-        for candidate in esk_candidates:
-            if candidate and os.path.exists(candidate):
-                esk_path = candidate
-                break
-
-    if os.path.exists(esk_path):
-        try:
-            esk = parse_esk(esk_path)
-            arm_name = esk.bones[0].name if esk.bones else "Armature"
-            if not arm_obj:
-                arm_obj = build_armature(esk, arm_name)
+    if esk is not None:
+        arm_name = esk.bones[0].name if esk.bones else "Armature"
+        if not arm_obj:
+            arm_obj = build_armature(esk, arm_name)
+        if source_tag == "NSK":
+            arm_obj.name = stem or arm_name
+            arm_obj["esk_root_name_original"] = arm_name
+            arm_obj["nsk_source_name"] = stem or ""
+        else:
             arm_obj.name = arm_name
-            arm_obj["esk_source_path"] = esk_path
-            arm_obj["esk_version"] = int(esk.version)
-            arm_obj["esk_i10"] = int(esk.i_10)
-            arm_obj["esk_i12"] = int(esk.i_12)
-            arm_obj["esk_i24"] = int(esk.i_24)
-            arm_obj["esk_skeleton_flag"] = int(esk.skeleton_flag)
-            arm_obj["esk_skeleton_id"] = str(int(esk.skeleton_id))
-            arm_obj.rotation_euler[0] = math.radians(90.0)
-            if arm_obj.data:
-                arm_obj.data.display_type = "STICK"
-        except Exception as error:
-            print("Failed to load ESK:", error)
+        arm_obj["esk_source_path"] = path
+        arm_obj["esk_version"] = int(esk.version)
+        arm_obj["esk_i10"] = int(esk.i_10)
+        arm_obj["esk_i12"] = int(esk.i_12)
+        arm_obj["esk_i24"] = int(esk.i_24)
+        arm_obj["esk_skeleton_flag"] = int(esk.skeleton_flag)
+        arm_obj["esk_skeleton_id"] = str(int(esk.skeleton_id))
+        arm_obj.rotation_euler[0] = math.radians(90.0)
+        if arm_obj.data:
+            arm_obj.data.display_type = "STICK"
+    else:
+        if esk_override and os.path.exists(esk_override):
+            esk_path = esk_override
+        else:
+            for candidate in esk_candidates:
+                if candidate and os.path.exists(candidate):
+                    esk_path = candidate
+                    break
+
+        if os.path.exists(esk_path):
+            try:
+                esk = parse_esk(esk_path)
+                arm_name = esk.bones[0].name if esk.bones else "Armature"
+                if not arm_obj:
+                    arm_obj = build_armature(esk, arm_name)
+                if source_tag == "NSK":
+                    arm_obj.name = stem or arm_name
+                    arm_obj["esk_root_name_original"] = arm_name
+                    arm_obj["nsk_source_name"] = stem or ""
+                else:
+                    arm_obj.name = arm_name
+                arm_obj["esk_source_path"] = esk_path
+                arm_obj["esk_version"] = int(esk.version)
+                arm_obj["esk_i10"] = int(esk.i_10)
+                arm_obj["esk_i12"] = int(esk.i_12)
+                arm_obj["esk_i24"] = int(esk.i_24)
+                arm_obj["esk_skeleton_flag"] = int(esk.skeleton_flag)
+                arm_obj["esk_skeleton_id"] = str(int(esk.skeleton_id))
+                arm_obj.rotation_euler[0] = math.radians(90.0)
+                if arm_obj.data:
+                    arm_obj.data.display_type = "STICK"
+            except (OSError, ValueError, RuntimeError, TypeError) as error:
+                print("Failed to load ESK:", error)
 
     imported_objects: list[bpy.types.Object] = []
     structure_parents: dict[object, bpy.types.Object] = {}
 
     for model in emd.models:
+        model_bone_name = (model.name or "").strip()
+        model_bone = _find_armature_bone(arm_obj, model_bone_name) if source_tag == "NSK" else None
+        model_has_named_bone = bool(model_bone_name and model_bone is not None)
         model_parent = None
         if preserve_structure:
             # Empty to represent the EMD model
-            model_parent = bpy.data.objects.new(model.name or "EMD_Model", None)
+            model_empty_name = f"{model.name}_model" if model.name else "EMD_Model"
+            model_parent = bpy.data.objects.new(model_empty_name, None)
             bpy.context.collection.objects.link(model_parent)
-            if arm_obj:
+            if nsk_use_rigid_model_placement and model_has_named_bone:
+                if arm_obj:
+                    model_parent.parent = arm_obj
+                esk_model_matrix = _get_esk_world_matrix_by_bone_name(esk, model_bone_name)
+                if esk_model_matrix is not None:
+                    # Use raw ESK world transform so rigid NSK placement matches source data.
+                    model_parent.matrix_local = esk_model_matrix
+                else:
+                    # Fallback when matrix lookup fails.
+                    model_parent.location = model_bone.head_local.copy()
+            elif arm_obj:
                 model_parent.parent = arm_obj
             structure_parents[model] = model_parent
 
@@ -498,7 +697,8 @@ def import_emd(
             mesh_parent = None
             if preserve_structure:
                 # Empty to represent the EMD mesh
-                mesh_parent = bpy.data.objects.new(mesh.name or "EMD_Mesh", None)
+                mesh_empty_name = f"{mesh.name}_mesh" if mesh.name else "EMD_Mesh"
+                mesh_parent = bpy.data.objects.new(mesh_empty_name, None)
                 bpy.context.collection.objects.link(mesh_parent)
                 if model_parent:
                     mesh_parent.parent = model_parent
@@ -506,10 +706,19 @@ def import_emd(
                     mesh_parent.parent = arm_obj
                 structure_parents[mesh] = mesh_parent
 
-            for sub in mesh.submeshes:
+            for sub_index, sub in enumerate(mesh.submeshes):
+                if preserve_structure:
+                    submesh_name_base = (mesh.name or sub.name or "EMD_Mesh").strip() or "EMD_Mesh"
+                    if len(mesh.submeshes) > 1:
+                        submesh_object_name = f"{submesh_name_base}_submesh_{sub_index:02d}"
+                    else:
+                        submesh_object_name = f"{submesh_name_base}_submesh"
+                else:
+                    submesh_object_name = sub.name or "EMD_Mesh"
+
                 # Create mesh + object
-                me = bpy.data.meshes.new(sub.name or "EMD_Mesh")
-                obj = bpy.data.objects.new(sub.name or "EMD_Mesh", me)
+                me = bpy.data.meshes.new(submesh_object_name)
+                obj = bpy.data.objects.new(submesh_object_name, me)
                 bpy.context.collection.objects.link(obj)
 
                 # Parenting:
@@ -527,22 +736,100 @@ def import_emd(
                 built_faces: list[tuple[int, int, int]] = []
                 built_source_indices: list[int] = []
                 built_palette_groups: list[object | None] = []
+                has_blend_weights = _submesh_has_blend_weights(sub)
+                use_emd_weight_logic_for_submesh = (
+                    source_tag == "NSK" and nsk_has_bones_entries and has_blend_weights
+                )
+                use_indexed_geometry_for_submesh = (
+                    source_behavior.use_indexed_geometry and not use_emd_weight_logic_for_submesh
+                )
+                strict_face_indices = source_behavior.strict_face_indices
+                per_vertex_palette_groups: list[object | None] = [None] * max(0, len(sub.vertices))
 
-                if getattr(sub, "triangle_groups", None):
-                    for tri_group in sub.triangle_groups:
-                        indices = getattr(tri_group, "indices", [])
-                        for i in range(0, len(indices), 3):
-                            if i + 2 >= len(indices):
+                if use_indexed_geometry_for_submesh:
+                    built_positions = [vertex.pos for vertex in sub.vertices]
+                    built_normals = [mathutils.Vector(vertex.normal) for vertex in sub.vertices]
+                    built_uvs = [vertex.uv for vertex in sub.vertices]
+                    built_uv2s = [vertex.uv2 for vertex in sub.vertices]
+                    built_colors = [vertex.color for vertex in sub.vertices]
+                    built_source_indices = list(range(len(sub.vertices)))
+
+                    if getattr(sub, "triangle_groups", None):
+                        for tri_group in sub.triangle_groups:
+                            indices = getattr(tri_group, "indices", [])
+                            for i in range(0, len(indices), 3):
+                                if i + 2 >= len(indices):
+                                    continue
+                                face_idxs = _validate_face_indices(
+                                    int(indices[i]),
+                                    int(indices[i + 1]),
+                                    int(indices[i + 2]),
+                                    strict_face_indices=strict_face_indices,
+                                    max_index=max_index,
+                                )
+                                if face_idxs is None:
+                                    continue
+                                built_faces.append(tuple(face_idxs))
+                                for src_idx in face_idxs:
+                                    if per_vertex_palette_groups[src_idx] is None:
+                                        per_vertex_palette_groups[src_idx] = tri_group
+                    else:
+                        for face in sub.faces:
+                            if len(face) < 3:
                                 continue
-                            face_idxs = [
-                                max(0, min(indices[i], max_index)),
-                                max(0, min(indices[i + 1], max_index)),
-                                max(0, min(indices[i + 2], max_index)),
-                            ]
-                            if (
-                                face_idxs[0] in (face_idxs[1], face_idxs[2])
-                                or face_idxs[1] == face_idxs[2]
-                            ):
+                            face_idxs = _validate_face_indices(
+                                int(face[0]),
+                                int(face[1]),
+                                int(face[2]),
+                                strict_face_indices=strict_face_indices,
+                                max_index=max_index,
+                            )
+                            if face_idxs is None:
+                                continue
+                            built_faces.append(tuple(face_idxs))
+
+                    built_palette_groups = per_vertex_palette_groups
+                else:
+                    if getattr(sub, "triangle_groups", None):
+                        for tri_group in sub.triangle_groups:
+                            indices = getattr(tri_group, "indices", [])
+                            for i in range(0, len(indices), 3):
+                                if i + 2 >= len(indices):
+                                    continue
+                                face_idxs = _validate_face_indices(
+                                    int(indices[i]),
+                                    int(indices[i + 1]),
+                                    int(indices[i + 2]),
+                                    strict_face_indices=strict_face_indices,
+                                    max_index=max_index,
+                                )
+                                if face_idxs is None:
+                                    continue
+                                new_face: list[int] = []
+                                for src_idx in face_idxs:
+                                    v = sub.vertices[src_idx]
+                                    new_idx = len(built_positions)
+                                    built_positions.append(v.pos)
+                                    built_normals.append(mathutils.Vector(v.normal))
+                                    built_uvs.append(v.uv)
+                                    built_uv2s.append(v.uv2)
+                                    built_colors.append(v.color)
+                                    built_source_indices.append(src_idx)
+                                    built_palette_groups.append(tri_group)
+                                    new_face.append(new_idx)
+                                built_faces.append(tuple(new_face))
+                    else:
+                        for face in sub.faces:
+                            if len(face) < 3:
+                                continue
+                            face_idxs = _validate_face_indices(
+                                int(face[0]),
+                                int(face[1]),
+                                int(face[2]),
+                                strict_face_indices=strict_face_indices,
+                                max_index=max_index,
+                            )
+                            if face_idxs is None:
                                 continue
                             new_face: list[int] = []
                             for src_idx in face_idxs:
@@ -554,36 +841,9 @@ def import_emd(
                                 built_uv2s.append(v.uv2)
                                 built_colors.append(v.color)
                                 built_source_indices.append(src_idx)
-                                built_palette_groups.append(tri_group)
+                                built_palette_groups.append(None)
                                 new_face.append(new_idx)
                             built_faces.append(tuple(new_face))
-                else:
-                    for face in sub.faces:
-                        if len(face) < 3:
-                            continue
-                        face_idxs = [
-                            max(0, min(face[0], max_index)),
-                            max(0, min(face[1], max_index)),
-                            max(0, min(face[2], max_index)),
-                        ]
-                        if (
-                            face_idxs[0] in (face_idxs[1], face_idxs[2])
-                            or face_idxs[1] == face_idxs[2]
-                        ):
-                            continue
-                        new_face: list[int] = []
-                        for src_idx in face_idxs:
-                            v = sub.vertices[src_idx]
-                            new_idx = len(built_positions)
-                            built_positions.append(v.pos)
-                            built_normals.append(mathutils.Vector(v.normal))
-                            built_uvs.append(v.uv)
-                            built_uv2s.append(v.uv2)
-                            built_colors.append(v.color)
-                            built_source_indices.append(src_idx)
-                            built_palette_groups.append(None)
-                            new_face.append(new_idx)
-                        built_faces.append(tuple(new_face))
 
                 if not built_faces:
                     print("No usable faces after rebuild, skipping:", sub.name)
@@ -596,33 +856,44 @@ def import_emd(
                     loop_normals = [
                         built_normals[loop.vertex_index].normalized() for loop in me.loops
                     ]
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(RuntimeError):
                         me.create_normals_split()
                     try:
                         me.normals_split_custom_set(loop_normals)
-                    except Exception:
-                        with contextlib.suppress(Exception):
+                    except RuntimeError:
+                        with contextlib.suppress(RuntimeError):
                             me.free_normals_split()
-                    with contextlib.suppress(Exception):
+                    with contextlib.suppress(RuntimeError):
                         me.validate(clean_customdata=False)
 
-                with contextlib.suppress(Exception):
-                    for poly in me.polygons:
-                        poly.use_smooth = True
+                for poly in me.polygons:
+                    poly.use_smooth = True
+                if hasattr(me, "use_auto_smooth"):
                     me.use_auto_smooth = True
+                if hasattr(me, "auto_smooth_angle"):
                     me.auto_smooth_angle = math.radians(AUTO_SMOOTH_ANGLE_DEGREES)
 
                 # UV Map 0
                 if any(uv != (0.0, 0.0) for uv in built_uvs):
                     uv_layer = me.uv_layers.new(name="UVMap")
-                    for loop_index, uv_val in enumerate(built_uvs):
-                        uv_layer.data[loop_index].uv = uv_val
+                    if len(built_uvs) == len(me.loops):
+                        for loop_index, uv_val in enumerate(built_uvs):
+                            uv_layer.data[loop_index].uv = uv_val
+                    else:
+                        for loop in me.loops:
+                            if 0 <= loop.vertex_index < len(built_uvs):
+                                uv_layer.data[loop.index].uv = built_uvs[loop.vertex_index]
 
                 # UV Map 1 (second UV set)
                 if any(uv2 != (0.0, 0.0) for uv2 in built_uv2s):
                     uv2_layer = me.uv_layers.new(name="UVMap_2")
-                    for loop_index, uv_val in enumerate(built_uv2s):
-                        uv2_layer.data[loop_index].uv = uv_val
+                    if len(built_uv2s) == len(me.loops):
+                        for loop_index, uv_val in enumerate(built_uv2s):
+                            uv2_layer.data[loop_index].uv = uv_val
+                    else:
+                        for loop in me.loops:
+                            if 0 <= loop.vertex_index < len(built_uv2s):
+                                uv2_layer.data[loop.index].uv = built_uv2s[loop.vertex_index]
 
                 # Vertex colors
                 if built_positions and any(color != (1.0, 1.0, 1.0, 1.0) for color in built_colors):
@@ -631,16 +902,31 @@ def import_emd(
                         domain="CORNER",
                         type="FLOAT_COLOR",
                     )
-                    for loop_index, col_val in enumerate(built_colors):
-                        col_layer.data[loop_index].color = col_val
+                    if len(built_colors) == len(me.loops):
+                        for loop_index, col_val in enumerate(built_colors):
+                            col_layer.data[loop_index].color = col_val
+                    else:
+                        for loop in me.loops:
+                            if 0 <= loop.vertex_index < len(built_colors):
+                                col_layer.data[loop.index].color = built_colors[loop.vertex_index]
 
                 bpy.context.view_layer.objects.active = obj
+
+                if arm_obj is not None and esk is not None and has_blend_weights:
+                    if use_indexed_geometry_for_submesh:
+                        # Indexed source meshes (NSK-style) must bind on source indices directly.
+                        bind_weights(obj, sub, arm_obj, esk)
+                    else:
+                        bind_weights_built(
+                            obj, sub, arm_obj, esk, built_source_indices, built_palette_groups
+                        )
+                    remove_unused_vertex_groups(obj)
 
                 if split_submeshes:
                     # When not importing custom normals, let Blender manage split normals.
                     # If custom normals were imported, keep them intact.
                     if not import_normals:
-                        with contextlib.suppress(Exception):
+                        with contextlib.suppress(RuntimeError):
                             me.free_normals_split()
 
                     if import_tangents:
@@ -668,13 +954,21 @@ def import_emd(
                         )
                         bpy.ops.object.mode_set(mode="OBJECT")
 
-                material = create_material(sub.name)
+                has_uv2_data = any(uv2 != (0.0, 0.0) for uv2 in built_uv2s)
+                emm_info = emm_by_name.get(sub.name.lower())
+
+                material = create_material(
+                    sub.name,
+                    source_format=source_tag,
+                    emm_shader=getattr(emm_info, "shader", None),
+                    force_shader_template=force_shader_template,
+                    reuse_materials=reuse_materials,
+                )
                 if me.materials:
                     me.materials[0] = material
                 else:
                     me.materials.append(material)
 
-                emm_info = emm_by_name.get(sub.name.lower())
                 if emm_info:
                     material["emm_name"] = emm_info.name
                     material["emm_shader"] = emm_info.shader
@@ -686,15 +980,26 @@ def import_emd(
                         key = f"emm_param_{p.name}"
                         if key not in material:
                             material[key] = p.value
-                _apply_shader_material(
-                    material,
-                    sub.texture_sampler_defs,
-                    emb_main,
-                    emb_dyt,
-                    emm_info,
-                    dyt_entry_index=dyt_entry_index,
-                    warn=_warn_once,
-                )
+                if source_behavior.use_placeholder_material:
+                    _apply_nsk_placeholder_material(
+                        material,
+                        sub.texture_sampler_defs,
+                        emb_main,
+                        image_from_sampler=_image_from_sampler,
+                        emm_info=emm_info,
+                        has_uv2=has_uv2_data,
+                        warn=_warn_once,
+                    )
+                else:
+                    _apply_shader_material(
+                        material,
+                        sub.texture_sampler_defs,
+                        emb_main,
+                        emb_dyt,
+                        emm_info,
+                        dyt_entry_index=dyt_entry_index,
+                        warn=_warn_once,
+                    )
 
                 if sub.texture_sampler_defs:
                     set_sampler_custom_properties(material, sub.texture_sampler_defs)
@@ -706,20 +1011,9 @@ def import_emd(
 
                 imported_objects.append(obj)
 
-                if (
-                    arm_obj is not None
-                    and esk is not None
-                    and sub.vertices
-                    and any(vertex.bone_ids for vertex in sub.vertices)
-                ):
-                    bind_weights_built(
-                        obj, sub, arm_obj, esk, built_source_indices, built_palette_groups
-                    )
-                    remove_unused_vertex_groups(obj)
-
     if not split_submeshes and imported_objects:
         ctx = bpy.context
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(RuntimeError):
             bpy.ops.object.mode_set(mode="OBJECT")
 
         bpy.ops.object.select_all(action="DESELECT")
@@ -740,7 +1034,7 @@ def import_emd(
         mesh_data = merged.data
 
         if import_tangents:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(RuntimeError):
                 mesh_data.calc_tangents()
 
         if merge_by_distance:

@@ -15,7 +15,7 @@ def _align16_size(size: int) -> int:
 def _read_arm_int_prop(arm_obj: bpy.types.Object, key: str, default: int) -> int:
     try:
         return int(arm_obj.get(key, default))
-    except Exception:
+    except (TypeError, ValueError):
         return int(default)
 
 
@@ -23,10 +23,10 @@ def _read_arm_u64_prop(arm_obj: bpy.types.Object, key: str, default: int) -> int
     raw = arm_obj.get(key, default)
     try:
         return int(raw)
-    except Exception:
+    except (TypeError, ValueError):
         try:
             return int(str(raw).strip())
-        except Exception:
+        except (TypeError, ValueError):
             return int(default)
 
 
@@ -48,7 +48,10 @@ def _pack_absolute_transforms(bones: list[ESK_Bone]) -> bytes:
         if bone_data.index in world_mats:
             return world_mats[bone_data.index]
         matrix = bone_data.matrix.copy()
-        if 0 <= bone_data.parent_index < len(bones) and bones[bone_data.parent_index] is not bone_data:
+        if (
+            0 <= bone_data.parent_index < len(bones)
+            and bones[bone_data.parent_index] is not bone_data
+        ):
             matrix = compute_world(bones[bone_data.parent_index]) @ matrix
         world_mats[bone_data.index] = matrix
         return matrix
@@ -156,10 +159,11 @@ def _export_using_source_template(
     source_path: str,
     bones: list[ESK_Bone],
 ) -> bool:
+    src = Path(source_path)
+    if not src.is_file():
+        return False
+
     try:
-        src = Path(source_path)
-        if not src.is_file():
-            return False
         data = src.read_bytes()
         layout = _read_skeleton_layout(data)
         if layout is None:
@@ -187,10 +191,9 @@ def _export_using_source_template(
         if abs_off:
             out[abs_off : abs_off + len(abs_blob)] = abs_blob
 
-        with open(filepath, "wb") as f:
-            f.write(out)
+        Path(filepath).write_bytes(out)
         return True
-    except Exception:
+    except (OSError, TypeError, ValueError, struct.error):
         return False
 
 
@@ -234,7 +237,7 @@ def export_esk(filepath: str, arm_obj: bpy.types.Object) -> tuple[bool, str | No
         with open(filepath, "wb") as f:
             f.write(out)
         return True, None
-    except Exception as exc:
+    except (RuntimeError, OSError, ValueError, TypeError, struct.error) as exc:
         import traceback
 
         traceback.print_exc()

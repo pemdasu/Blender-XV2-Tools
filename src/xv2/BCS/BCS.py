@@ -5,6 +5,8 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ...utils.binary import f32, i16, i32, u16, u32
+
 
 class Version(enum.IntEnum):
     XV1 = 1
@@ -245,25 +247,25 @@ class _BCSParser:
     def parse(self) -> BCSFile:
         version = self._read_version()
 
-        partset_count = self._u16(12)
-        partcolors_count = self._u16(14)
-        body_count = self._u16(16)
+        partset_count = u16(self.data, 12)
+        partcolors_count = u16(self.data, 14)
+        body_count = u16(self.data, 16)
 
         if version == Version.XV1:
-            partset_offset = self._i32(20)
-            partcolors_offset = self._i32(24)
-            body_offset = self._i32(28)
+            partset_offset = i32(self.data, 20)
+            partcolors_offset = i32(self.data, 24)
+            body_offset = i32(self.data, 28)
             skeleton2_offset = 0
             skeleton1_offset = 64
             f_48 = self._float_array(36, 7)
             race_val = self.data[32] if len(self.data) > 32 else 0
             gender_val = self.data[33] if len(self.data) > 33 else 0
         else:
-            partset_offset = self._i32(24)
-            partcolors_offset = self._i32(28)
-            body_offset = self._i32(32)
-            skeleton2_offset = self._i32(36)
-            skeleton1_offset = self._i32(40)
+            partset_offset = i32(self.data, 24)
+            partcolors_offset = i32(self.data, 28)
+            body_offset = i32(self.data, 32)
+            skeleton2_offset = i32(self.data, 36)
+            skeleton1_offset = i32(self.data, 40)
             f_48 = self._float_array(48, 7)
             race_val = self.data[44] if len(self.data) > 44 else 0
             gender_val = self.data[45] if len(self.data) > 45 else 0
@@ -281,13 +283,13 @@ class _BCSParser:
 
         if skeleton1_offset != 0:
             skeleton_ptr = (
-                skeleton1_offset if version == Version.XV1 else self._i32(skeleton1_offset)
+                skeleton1_offset if version == Version.XV1 else i32(self.data, skeleton1_offset)
             )
             if skeleton_ptr:
                 bcs.skeleton1 = self._parse_skeleton(skeleton_ptr, version)
 
         if skeleton2_offset != 0:
-            skeleton_ptr = self._i32(skeleton2_offset)
+            skeleton_ptr = i32(self.data, skeleton2_offset)
             if skeleton_ptr:
                 bcs.skeleton2 = self._parse_skeleton(skeleton_ptr, version)
 
@@ -296,19 +298,19 @@ class _BCSParser:
     def _parse_part_sets(self, bcs: BCSFile, table_offset: int, count: int) -> None:
         offset = table_offset
         for idx in range(count):
-            partset_ptr = self._i32(offset)
+            partset_ptr = i32(self.data, offset)
             if partset_ptr != 0:
                 part_set = PartSet(id=idx)
 
-                part_count = self._i32(partset_ptr + 20)
+                part_count = i32(self.data, partset_ptr + 20)
                 if part_count != 10:
                     raise ValueError(
                         f"Part count mismatch on PartSet {idx}: expected 10, found {part_count}"
                     )
 
-                table = partset_ptr + self._i32(partset_ptr + 24)
+                table = partset_ptr + i32(self.data, partset_ptr + 24)
                 for i, part_type in enumerate(self._PART_ORDER):
-                    part_offset = self._i32(table + i * 4)
+                    part_offset = i32(self.data, table + i * 4)
                     part = self._parse_part(part_offset, partset_ptr, part_type, bcs.version)
                     if part:
                         part_set.parts[part_type] = part
@@ -327,45 +329,45 @@ class _BCSParser:
             return None
 
         offset = part_base + relative_offset
-        hide_flags = self._i32(offset + 28)
-        hide_mat_flags = self._i32(offset + 32)
+        hide_flags = i32(self.data, offset + 28)
+        hide_mat_flags = i32(self.data, offset + 32)
 
         if hide_flags > 0x3FF or hide_mat_flags > 0x3FF:
             raise ValueError(
                 f"Unexpected hide flags on part {part_type}: {hide_flags}, {hide_mat_flags}"
             )
 
-        color_count = self._u16(offset + 18)
-        color_offset = self._i32(offset + 20) + offset if color_count > 0 else 0
-        physics_count = self._u16(offset + 74)
-        physics_offset = self._i32(offset + 76) + offset if physics_count > 0 else 0
+        color_count = u16(self.data, offset + 18)
+        color_offset = i32(self.data, offset + 20) + offset if color_count > 0 else 0
+        physics_count = u16(self.data, offset + 74)
+        physics_offset = i32(self.data, offset + 76) + offset if physics_count > 0 else 0
 
         part = Part(
             part_type=part_type,
-            model=self._i16(offset + 0),
-            model2=self._i16(offset + 2),
-            texture=self._i16(offset + 4),
-            shader=self._i16(offset + 16),
-            flags=PartFlags(self._u32(offset + 24)),
+            model=i16(self.data, offset + 0),
+            model2=i16(self.data, offset + 2),
+            texture=i16(self.data, offset + 4),
+            shader=i16(self.data, offset + 16),
+            flags=PartFlags(u32(self.data, offset + 24)),
             hide_flags=PartTypeFlags(hide_flags),
             hide_mat_flags=PartTypeFlags(hide_mat_flags),
-            f_36=self._f32(offset + 36),
-            f_40=self._f32(offset + 40),
-            i_44=self._i32(offset + 44),
-            i_48=self._i32(offset + 48),
+            f_36=f32(self.data, offset + 36),
+            f_40=f32(self.data, offset + 40),
+            i_44=i32(self.data, offset + 44),
+            i_48=i32(self.data, offset + 48),
             chara_code=self._read_fixed_string(offset + 52, 4, encoding="ascii"),
-            emd_path=self._string_rel(self._i32(offset + 56), offset),
-            emm_path=self._string_rel(self._i32(offset + 60), offset),
-            emb_path=self._string_rel(self._i32(offset + 64), offset),
-            ean_path=self._string_rel(self._i32(offset + 68), offset),
+            emd_path=self._string_rel(i32(self.data, offset + 56), offset),
+            emm_path=self._string_rel(i32(self.data, offset + 60), offset),
+            emb_path=self._string_rel(i32(self.data, offset + 64), offset),
+            ean_path=self._string_rel(i32(self.data, offset + 68), offset),
         )
 
         part.color_selectors = self._parse_color_selectors(color_offset, color_count)
         part.physics_parts = self._parse_physics_parts(physics_offset, physics_count)
 
         if version == Version.XV2:
-            unk3_count = self._u16(offset + 82)
-            unk3_offset = self._i32(offset + 84) + offset if unk3_count > 0 else 0
+            unk3_count = u16(self.data, offset + 82)
+            unk3_offset = i32(self.data, offset + 84) + offset if unk3_count > 0 else 0
             part.unk3 = self._parse_unk3(unk3_offset, unk3_count)
 
         return part
@@ -378,7 +380,8 @@ class _BCSParser:
         for _ in range(count):
             selectors.append(
                 ColorSelector(
-                    part_color_group=self._u16(offset + 0), color_index=self._u16(offset + 2)
+                    part_color_group=u16(self.data, offset + 0),
+                    color_index=u16(self.data, offset + 2),
                 )
             )
             offset += 4
@@ -390,27 +393,27 @@ class _BCSParser:
 
         parts: list[PhysicsPart] = []
         for _ in range(count):
-            hide_flags = self._i32(offset + 28)
-            hide_mat_flags = self._i32(offset + 32)
+            hide_flags = i32(self.data, offset + 28)
+            hide_mat_flags = i32(self.data, offset + 32)
 
             if hide_flags > 0x200 or hide_mat_flags > 0x200:
                 raise ValueError(f"Unexpected physics hide flags: {hide_flags}, {hide_mat_flags}")
 
             parts.append(
                 PhysicsPart(
-                    model1=self._i16(offset + 0),
-                    model2=self._i16(offset + 2),
-                    texture=self._i16(offset + 4),
-                    flags=PartFlags(self._u32(offset + 24)),
+                    model1=i16(self.data, offset + 0),
+                    model2=i16(self.data, offset + 2),
+                    texture=i16(self.data, offset + 4),
+                    flags=PartFlags(u32(self.data, offset + 24)),
                     hide_flags=PartTypeFlags(hide_flags),
                     hide_mat_flags=PartTypeFlags(hide_mat_flags),
                     chara_code=self._read_fixed_string(offset + 36, 4, encoding="ascii"),
-                    emd_path=self._string_rel(self._i32(offset + 40), offset),
-                    emm_path=self._string_rel(self._i32(offset + 44), offset),
-                    emb_path=self._string_rel(self._i32(offset + 48), offset),
-                    ean_path=self._string_rel(self._i32(offset + 52), offset),
-                    bone_to_attach=self._string_rel(self._i32(offset + 56), offset),
-                    scd_path=self._string_rel(self._i32(offset + 60), offset),
+                    emd_path=self._string_rel(i32(self.data, offset + 40), offset),
+                    emm_path=self._string_rel(i32(self.data, offset + 44), offset),
+                    emb_path=self._string_rel(i32(self.data, offset + 48), offset),
+                    ean_path=self._string_rel(i32(self.data, offset + 52), offset),
+                    bone_to_attach=self._string_rel(i32(self.data, offset + 56), offset),
+                    scd_path=self._string_rel(i32(self.data, offset + 60), offset),
                 )
             )
             offset += 72
@@ -430,13 +433,13 @@ class _BCSParser:
     def _parse_part_colors(self, bcs: BCSFile, table_offset: int, count: int) -> None:
         offset = table_offset
         for idx in range(count):
-            color_ptr = self._i32(offset)
+            color_ptr = i32(self.data, offset)
             if color_ptr != 0:
-                name_offset = self._i32(color_ptr + 0) + color_ptr
+                name_offset = i32(self.data, color_ptr + 0) + color_ptr
                 name = self._read_cstring(name_offset)
 
-                color_count = self._u16(color_ptr + 10)
-                colors_offset = self._i32(color_ptr + 12) + color_ptr if color_count > 0 else 0
+                color_count = u16(self.data, color_ptr + 10)
+                colors_offset = i32(self.data, color_ptr + 12) + color_ptr if color_count > 0 else 0
                 colors = self._parse_colors(colors_offset, color_count)
 
                 bcs.part_colors.append(PartColor(id=idx, name=name, colors=colors))
@@ -462,7 +465,7 @@ class _BCSParser:
     def _parse_bodies(self, bcs: BCSFile, table_offset: int, count: int) -> None:
         offset = table_offset
         for idx in range(count):
-            body_ptr = self._i32(offset)
+            body_ptr = i32(self.data, offset)
             if body_ptr != 0:
                 body = self._parse_body(body_ptr, idx)
                 if body.body_scales:
@@ -470,18 +473,20 @@ class _BCSParser:
             offset += 4
 
     def _parse_body(self, offset: int, index: int) -> Body:
-        body_scale_count = self._u16(offset + 2)
-        body_scale_offset = self._i32(offset + 4) + offset
+        body_scale_count = u16(self.data, offset + 2)
+        body_scale_offset = i32(self.data, offset + 4) + offset
 
         body_scales: list[BoneScale] = []
         for _ in range(body_scale_count):
-            bone_name = self._read_cstring(self._i32(body_scale_offset + 12) + body_scale_offset)
+            bone_name = self._read_cstring(
+                i32(self.data, body_scale_offset + 12) + body_scale_offset
+            )
             body_scales.append(
                 BoneScale(
                     bone_name=bone_name,
-                    scale_x=self._f32(body_scale_offset + 0),
-                    scale_y=self._f32(body_scale_offset + 4),
-                    scale_z=self._f32(body_scale_offset + 8),
+                    scale_x=f32(self.data, body_scale_offset + 0),
+                    scale_y=f32(self.data, body_scale_offset + 4),
+                    scale_z=f32(self.data, body_scale_offset + 8),
                 )
             )
             body_scale_offset += 16
@@ -491,46 +496,46 @@ class _BCSParser:
     def _parse_skeleton(self, offset: int, version: Version) -> SkeletonData:
         relative_to = 32 if version == Version.XV1 else offset
 
-        i_00 = self._i16(offset)
-        bone_count = self._u16(offset + 2)
-        bone_offset = self._i32(offset + 4) + relative_to
+        i_00 = i16(self.data, offset)
+        bone_count = u16(self.data, offset + 2)
+        bone_offset = i32(self.data, offset + 4) + relative_to
 
         bones: list[Bone] = []
         for _ in range(bone_count):
             if version == Version.XV1:
-                bone_name = self._read_cstring(self._i32(bone_offset + 12) + bone_offset)
+                bone_name = self._read_cstring(i32(self.data, bone_offset + 12) + bone_offset)
                 bones.append(
                     Bone(
                         bone_name=bone_name,
-                        i_00=self._i32(bone_offset + 0),
-                        i_04=self._i32(bone_offset + 4),
-                        f_12=self._f32(bone_offset + 16),
-                        f_16=self._f32(bone_offset + 20),
-                        f_20=self._f32(bone_offset + 24),
-                        f_24=self._f32(bone_offset + 28),
-                        f_28=self._f32(bone_offset + 32),
-                        f_32=self._f32(bone_offset + 36),
-                        f_36=self._f32(bone_offset + 40),
-                        f_40=self._f32(bone_offset + 44),
-                        f_44=self._f32(bone_offset + 48),
+                        i_00=i32(self.data, bone_offset + 0),
+                        i_04=i32(self.data, bone_offset + 4),
+                        f_12=f32(self.data, bone_offset + 16),
+                        f_16=f32(self.data, bone_offset + 20),
+                        f_20=f32(self.data, bone_offset + 24),
+                        f_24=f32(self.data, bone_offset + 28),
+                        f_28=f32(self.data, bone_offset + 32),
+                        f_32=f32(self.data, bone_offset + 36),
+                        f_36=f32(self.data, bone_offset + 40),
+                        f_40=f32(self.data, bone_offset + 44),
+                        f_44=f32(self.data, bone_offset + 48),
                     )
                 )
             else:
-                bone_name = self._read_cstring(self._i32(bone_offset + 48) + bone_offset)
+                bone_name = self._read_cstring(i32(self.data, bone_offset + 48) + bone_offset)
                 bones.append(
                     Bone(
                         bone_name=bone_name,
-                        i_00=self._i32(bone_offset + 0),
-                        i_04=self._i32(bone_offset + 4),
-                        f_12=self._f32(bone_offset + 12),
-                        f_16=self._f32(bone_offset + 16),
-                        f_20=self._f32(bone_offset + 20),
-                        f_24=self._f32(bone_offset + 24),
-                        f_28=self._f32(bone_offset + 28),
-                        f_32=self._f32(bone_offset + 32),
-                        f_36=self._f32(bone_offset + 36),
-                        f_40=self._f32(bone_offset + 40),
-                        f_44=self._f32(bone_offset + 44),
+                        i_00=i32(self.data, bone_offset + 0),
+                        i_04=i32(self.data, bone_offset + 4),
+                        f_12=f32(self.data, bone_offset + 12),
+                        f_16=f32(self.data, bone_offset + 16),
+                        f_20=f32(self.data, bone_offset + 20),
+                        f_24=f32(self.data, bone_offset + 24),
+                        f_28=f32(self.data, bone_offset + 28),
+                        f_32=f32(self.data, bone_offset + 32),
+                        f_36=f32(self.data, bone_offset + 36),
+                        f_40=f32(self.data, bone_offset + 40),
+                        f_44=f32(self.data, bone_offset + 44),
                     )
                 )
             bone_offset += 52
@@ -538,27 +543,12 @@ class _BCSParser:
         return SkeletonData(i_00=i_00, bones=bones)
 
     def _read_version(self) -> Version:
-        signature = self._i16(6)
+        signature = i16(self.data, 6)
         if signature == 72:
             return Version.XV1
         if signature in (0, 76):
             return Version.XV2
         raise ValueError(f"Unknown BCS version flag: {signature}")
-
-    def _u16(self, offset: int) -> int:
-        return struct.unpack_from("<H", self.data, offset)[0]
-
-    def _i16(self, offset: int) -> int:
-        return struct.unpack_from("<h", self.data, offset)[0]
-
-    def _u32(self, offset: int) -> int:
-        return struct.unpack_from("<I", self.data, offset)[0]
-
-    def _i32(self, offset: int) -> int:
-        return struct.unpack_from("<i", self.data, offset)[0]
-
-    def _f32(self, offset: int) -> float:
-        return struct.unpack_from("<f", self.data, offset)[0]
 
     def _float_array(self, offset: int, count: int) -> list[float]:
         return list(struct.unpack_from(f"<{count}f", self.data, offset))

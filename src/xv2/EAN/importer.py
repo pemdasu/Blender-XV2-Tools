@@ -393,13 +393,13 @@ def import_ean_animations(
             arm_obj.data.name = ean_arm_name
         _relink_armature(old_arm, arm_obj)
         for scd_arm in scd_sources:
-            with contextlib.suppress(Exception):
-                # Relink any SCD armatures that were targeting the old armature to the new one.
+            # Relink any SCD armatures that were targeting the old armature to the new one.
+            with contextlib.suppress(AttributeError, RuntimeError):
                 link_scd_armatures(scd_arm, arm_obj)
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(RuntimeError):
             bpy.data.objects.remove(old_arm, do_unlink=True)
         if arm_data and arm_data.users == 0:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(RuntimeError):
                 bpy.data.armatures.remove(arm_data, do_unlink=True)
 
     arm_obj["ean_source"] = os.path.abspath(path)
