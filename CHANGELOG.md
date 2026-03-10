@@ -2,9 +2,12 @@
 
 ## 1.0.9
 
-- Added support for NSK and MAP/FMP import and export
-- Added icons to the import and export options and categorize them
+- Added support for NSK and MAP/FMP import and export (MAP export options `Export collision meshes` and `Export linked NSK files` are experimental)
+- Added import/export category dropdown menus with format icons
+- Added character shader support for EMM shader names that include `UNIF_ENV` (like frieza orb) (not 100% accurate)
+- Added a `Reuse Materials` import option for EMD/NSK/MAP
 - Internal code clean up and refactoring
+- Readded "Auto Merge by Distance" option
 
 ## 1.0.8
 
