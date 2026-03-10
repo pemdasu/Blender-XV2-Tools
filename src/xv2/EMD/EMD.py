@@ -167,12 +167,11 @@ def sampler_def_to_prop_dict(sampler: EMD_TextureSamplerDef) -> dict:
 
 
 def set_sampler_custom_properties(target, samplers: list[EMD_TextureSamplerDef]):
-    legacy_prefixes = ("texture_sampler_def_", "emd_texture_sampler_def_")
+    sampler_prefix = "emd_texture_sampler_def_"
     for key in list(target.keys()):
-        if key.startswith(legacy_prefixes):
+        if key.startswith(sampler_prefix):
             target.pop(key, None)
-    for root_key in ("texture_sampler_defs", "emd_texture_sampler_defs"):
-        target.pop(root_key, None)
+    target.pop("emd_texture_sampler_defs", None)
 
     sampler_dict = {}
     for sampler_index, sampler in enumerate(samplers):

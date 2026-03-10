@@ -206,10 +206,8 @@ def load_emb_image(
         if not message:
             return
         if warn:
-            try:
+            with contextlib.suppress(RuntimeError):
                 warn(message)
-            except RuntimeError:
-                pass
 
     if not entry.data:
         return None
@@ -229,7 +227,8 @@ def load_emb_image(
         header_size = u32(dds_data, 4)
         if header_size != 124:
             _warn(
-                f"Texture '{entry_label}' in '{emb_file}' has an invalid DDS header and was skipped."
+                f"Texture '{entry_label}' in '{emb_file}' has an invalid DDS header "
+                "and was skipped."
             )
             return None
         fourcc = dds_data[84:88]
@@ -237,7 +236,8 @@ def load_emb_image(
         if fourcc and fourcc not in allowed:
             fourcc_text = fourcc.decode("ascii", errors="replace").strip() or repr(fourcc)
             _warn(
-                f"Texture '{entry_label}' in '{emb_file}' uses unsupported DDS format '{fourcc_text}'. "
+                f"Texture '{entry_label}' in '{emb_file}' uses unsupported DDS format "
+                f"'{fourcc_text}'. "
                 "Supported: DXT1, DXT3, DXT5, BC1-BC5, ATI2."
             )
             return None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import math
 import struct
 from pathlib import Path
@@ -446,10 +447,8 @@ def _build_emd_from_armature_hierarchy(arm_obj: bpy.types.Object) -> EMD_File:
         if first_mesh_obj is not None:
             break
     if first_mesh_obj is not None and "emd_file_version" in first_mesh_obj:
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             emd.version = int(first_mesh_obj.get("emd_file_version"))
-        except (TypeError, ValueError):
-            pass
 
     for model_name, mesh_entries in model_entries:
         model = EMD_Model()

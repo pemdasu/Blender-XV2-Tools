@@ -248,7 +248,8 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
         frame_count = max(frames) + 1
         use_16bit_indices = frame_count > 255
 
-        # Temporarily assign actions so we can sample evaluated transforms (visual keying) without baking.
+        # Temporarily assign actions so we can sample evaluated transforms (visual keying)
+        # without baking.
         cam_anim_data = cam_obj.animation_data or cam_obj.animation_data_create()
         orig_cam_action = cam_anim_data.action
         cam_anim_data.action = cam_action

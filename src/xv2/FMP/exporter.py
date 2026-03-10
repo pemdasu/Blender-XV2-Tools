@@ -576,7 +576,7 @@ def _collect_collision_meshes(
         mesh_data.calc_loop_triangles()
         for triangle in mesh_data.loop_triangles:
             v0, v1, v2 = triangle.vertices
-            if v0 == v1 or v0 == v2 or v1 == v2:
+            if v0 in (v1, v2) or v1 == v2:
                 continue
             if flip_winding:
                 faces.extend((int(v0), int(v2), int(v1)))
@@ -1075,7 +1075,7 @@ def _append_collision_vertices_to_buffer(
     normals: list[tuple[float, float, float]],
 ) -> int:
     write_offset = _align_buffer_size(buffer, 4)
-    for vertex, normal in zip(vertices, normals):
+    for vertex, normal in zip(vertices, normals, strict=True):
         vx, vy, vz = vertex
         nx, ny, nz = normal
         buffer.extend(
@@ -1627,10 +1627,7 @@ def _hvk_build_simd_tree_blob(
 
     node_stride = 112
     template = bytearray(template_node_bytes)
-    if len(template) < node_stride:
-        template = bytearray(node_stride)
-    else:
-        template = template[:node_stride]
+    template = bytearray(node_stride) if len(template) < node_stride else template[:node_stride]
 
     blob = bytearray(template)
     for node in flat_nodes:
@@ -1750,11 +1747,8 @@ def _patch_hvk_mesh_data(
             rebuilt_triangles.append((i0, i1, i2))
         current_triangles = rebuilt_triangles
 
-    if triangle_record is not None:
-        # Match Xv2CoreLib behavior (triangle extra int remains default/zeroed).
-        new_triangle_w = [0] * len(current_triangles)
-    else:
-        new_triangle_w = []
+    # Match Xv2CoreLib behavior (triangle extra int remains default/zeroed).
+    new_triangle_w = [0] * len(current_triangles) if triangle_record is not None else []
 
     if current_triangles:
         shape_key_bits = int(math.ceil(math.log(max(1, len(current_triangles)), 2)))
@@ -1927,7 +1921,7 @@ def _can_reuse_source_layout(source_fmp: FMPFile, merged_fmp: FMPFile) -> bool:
     if len(source_fmp.objects) != len(merged_fmp.objects):
         return False
 
-    for source_obj, merged_obj in zip(source_fmp.objects, merged_fmp.objects):
+    for source_obj, merged_obj in zip(source_fmp.objects, merged_fmp.objects, strict=True):
         if len(source_obj.entities) != len(merged_obj.entities):
             return False
         if len(source_obj.collider_instances) != len(merged_obj.collider_instances):
@@ -1946,7 +1940,9 @@ def _can_reuse_source_layout(source_fmp: FMPFile, merged_fmp: FMPFile) -> bool:
             ):
                 return False
 
-        for source_entity, merged_entity in zip(source_obj.entities, merged_obj.entities):
+        for source_entity, merged_entity in zip(
+            source_obj.entities, merged_obj.entities, strict=True
+        ):
             source_visual = source_entity.visual
             merged_visual = merged_entity.visual
             if (source_visual is None) != (merged_visual is None):
@@ -1959,7 +1955,7 @@ def _can_reuse_source_layout(source_fmp: FMPFile, merged_fmp: FMPFile) -> bool:
                 return False
             if source_visual.ema_file != merged_visual.ema_file:
                 return False
-            for source_lod, merged_lod in zip(source_visual.lods, merged_visual.lods):
+            for source_lod, merged_lod in zip(source_visual.lods, merged_visual.lods, strict=True):
                 if source_lod.nsk_file != merged_lod.nsk_file:
                     return False
                 if source_lod.emm_file != merged_lod.emm_file:
@@ -2280,7 +2276,10 @@ def _write_into_source_layout(
                                     "<i", out, vertex_count_offset, int(target_vertex_count)
                                 )
                                 struct.pack_into(
-                                    "<i", out, vertex_data_offset_offset, int(appended_vertex_offset)
+                                    "<i",
+                                    out,
+                                    vertex_data_offset_offset,
+                                    int(appended_vertex_offset),
                                 )
                                 struct.pack_into(
                                     "<i", out, face_count_offset, int(target_face_count)

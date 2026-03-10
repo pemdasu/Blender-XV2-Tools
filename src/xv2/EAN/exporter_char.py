@@ -462,12 +462,20 @@ def _build_animation_bytes(
 
         comps: list[tuple[int, int, int, list[tuple[int, float, float, float, float]]]] = []
 
-        def build_component(comp_type: ComponentType, frames: set[int], pad_last: bool = True):
+        bone_name = bone.name
+
+        def build_component(
+            comp_type: ComponentType,
+            frames: set[int],
+            pad_last: bool = True,
+            *,
+            bone_name_ref: str = bone_name,
+        ):
             if not frames:
                 return None
             keyframes = []
             for f in sorted(frames):
-                loc, rot, scl = samples[bone.name][f]
+                loc, rot, scl = samples[bone_name_ref][f]
                 match comp_type:
                     case ComponentType.Position:
                         vals = (loc.x, loc.y, loc.z, 1.0)
@@ -649,7 +657,8 @@ def export_ean(
         if max_index < 0:
             return (
                 False,
-                "Animations were found but none had exportable keyframes on pose bones (location/rotation/scale).",
+                "Animations were found but none had exportable keyframes on pose bones "
+                "(location/rotation/scale).",
             )
 
         animation_count = max_index + 1
