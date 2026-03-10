@@ -153,16 +153,21 @@ def _get_shader_template(template_name: str = "shader") -> bpy.types.Material | 
 def _make_shader_material(
     name: str,
     template_name: str | None = None,
+    reuse_materials: bool = True,
 ) -> bpy.types.Material:
     material_name = name or "EMD_Material"
-
-    # Reuse existing material to avoid Blender auto-suffixes like .001/.002.
-    existing = bpy.data.materials.get(material_name)
-    if existing is not None:
-        return existing
-
     if not template_name:
         template_name = "eye_shader" if name and name.lower().startswith("eye_") else "shader"
+
+    # Reuse existing material when enabled to avoid Blender auto-suffixes.
+    existing = bpy.data.materials.get(material_name)
+    if (
+        reuse_materials
+        and existing is not None
+        and str(existing.get("_xv2_shader_template_name", "")) == template_name
+    ):
+        return existing
+
     template = _get_shader_template(template_name)
     # If the cached template was removed, refresh the cache and try again.
     try:
@@ -183,9 +188,11 @@ def _make_shader_material(
             mat.name = material_name
             mat.use_fake_user = False
             mat["_xv2_shader_template"] = True
+            mat["_xv2_shader_template_name"] = template_name
             return mat
     material = bpy.data.materials.new(name=material_name)
     material.use_nodes = True
+    material["_xv2_shader_template_name"] = template_name
     if material.node_tree:
         material.node_tree.nodes.clear()
         material.node_tree.links.clear()
@@ -195,10 +202,14 @@ def _make_shader_material(
 def _resolve_shader_template(
     submesh_name: str,
     source_format: str = "EMD",
+    emm_shader: str | None = None,
     force_shader_template: str | None = None,
 ) -> str:
     if force_shader_template:
         return force_shader_template
+    shader_name = (emm_shader or "").strip().upper()
+    if "UNIF_ENV" in shader_name:
+        return "unif_env_shader"
     format_tag = (source_format or "EMD").strip().upper()
     # Hook for format-specific shader defaults.
     if format_tag == "NSK":
@@ -269,14 +280,21 @@ def bind_weights_built(
 def create_material(
     submesh_name: str,
     source_format: str = "EMD",
+    emm_shader: str | None = None,
     force_shader_template: str | None = None,
+    reuse_materials: bool = True,
 ) -> bpy.types.Material:
     template_name = _resolve_shader_template(
         submesh_name=submesh_name,
         source_format=source_format,
+        emm_shader=emm_shader,
         force_shader_template=force_shader_template,
     )
-    return _make_shader_material(submesh_name, template_name=template_name)
+    return _make_shader_material(
+        submesh_name,
+        template_name=template_name,
+        reuse_materials=reuse_materials,
+    )
 
 
 def _image_from_sampler(
@@ -334,6 +352,8 @@ def _apply_shader_material(
     msk_node = nodes.get("XV2_MSK_EMB_SAMPLER")
     dual_toggle = nodes.get("XV2_DUAL_EMB_TOGGLE")
     msk_toggle = nodes.get("XV2_MSK_EMB_TOGGLE")
+    shader_name = (getattr(emm_info, "shader", "") or "").upper()
+    use_unif_env = "UNIF_ENV" in shader_name
 
     main_img = _image_from_sampler(sampler_defs, 0, emb_main, warn=warn)
     dual_img = _image_from_sampler(sampler_defs, 2, emb_main, warn=warn)
@@ -345,12 +365,15 @@ def _apply_shader_material(
             tex_node.projection = "FLAT"
             tex_node.extension = "EXTEND" if is_dyt else "REPEAT"
             if not is_dyt and img and hasattr(img, "colorspace_settings"):
-                img.colorspace_settings.name = "Non-Color"
+                img.colorspace_settings.name = "Non-Color" if not use_unif_env else "sRGB"
         except (AttributeError, TypeError, ValueError):
             pass
 
     if emb_node and main_img:
         _configure_image(emb_node, main_img, is_dyt=False)
+        if use_unif_env:
+            with contextlib.suppress(AttributeError, TypeError, ValueError):
+                emb_node.extension = "EXTEND"
     use_dual = dual_img is not None and emm_info and "d2_" in (emm_info.shader or "")
     if dual_node and dual_img and use_dual:
         _configure_image(dual_node, dual_img, is_dyt=False)
@@ -450,6 +473,7 @@ def _apply_shader_material(
 
     _apply_params_to_group("XV2_BASIC_SHADER")
     _apply_params_to_group("XV2_BASIC_EYE_SHADER")
+    _apply_params_to_group("TOON_UNIF_ENV")
 
 
 def _validate_face_indices(
@@ -496,6 +520,7 @@ def import_emd(
     source_format: str = "EMD",
     disable_dyt: bool = False,
     force_shader_template: str | None = None,
+    reuse_materials: bool = True,
     emb_override: str = "",
     emm_override: str = "",
 ):
@@ -542,7 +567,8 @@ def import_emd(
                             break
         else:
             _warn_once(
-                f"EMB override was not found: '{emb_override_path}'. Falling back to default EMB lookup."
+                f"EMB override was not found: '{emb_override_path}'. "
+                "Falling back to default EMB lookup."
             )
 
     if emb_main is None:
@@ -559,7 +585,8 @@ def import_emd(
             emm_path = emm_override_path
         else:
             _warn_once(
-                f"EMM override was not found: '{emm_override_path}'. Falling back to default EMM lookup."
+                f"EMM override was not found: '{emm_override_path}'. "
+                "Falling back to default EMM lookup."
             )
 
     if not emm_path:
@@ -928,18 +955,20 @@ def import_emd(
                         bpy.ops.object.mode_set(mode="OBJECT")
 
                 has_uv2_data = any(uv2 != (0.0, 0.0) for uv2 in built_uv2s)
+                emm_info = emm_by_name.get(sub.name.lower())
 
                 material = create_material(
                     sub.name,
                     source_format=source_tag,
+                    emm_shader=getattr(emm_info, "shader", None),
                     force_shader_template=force_shader_template,
+                    reuse_materials=reuse_materials,
                 )
                 if me.materials:
                     me.materials[0] = material
                 else:
                     me.materials.append(material)
 
-                emm_info = emm_by_name.get(sub.name.lower())
                 if emm_info:
                     material["emm_name"] = emm_info.name
                     material["emm_shader"] = emm_info.shader
