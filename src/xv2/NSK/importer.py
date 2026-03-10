@@ -1,3 +1,4 @@
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
@@ -133,10 +134,8 @@ def _set_group_input_value(node: bpy.types.Node | None, socket_name: str, value:
         return
     if socket_name not in node.inputs:
         return
-    try:
+    with contextlib.suppress(AttributeError, TypeError, ValueError):
         node.inputs[socket_name].default_value = value
-    except (AttributeError, TypeError, ValueError):
-        pass
 
 
 def _get_group_socket(
@@ -341,14 +340,10 @@ def apply_nsk_placeholder_material(
                 tex_node.projection = "FLAT"
             if hasattr(tex_node, "extension"):
                 tex_node.extension = "REPEAT"
-            try:
+            with contextlib.suppress(AttributeError, ValueError):
                 image.colorspace_settings.name = _nsk_role_colorspace(role_name)
-            except (AttributeError, ValueError):
-                pass
-            try:
+            with contextlib.suppress(AttributeError, ValueError):
                 image.alpha_mode = "CHANNEL_PACKED"
-            except (AttributeError, ValueError):
-                pass
 
         use_uv2_sampler = has_uv2 and (
             role_name in {"ShadowUV2", "BlendMaskAlpha"}
@@ -365,10 +360,8 @@ def apply_nsk_placeholder_material(
             _set_group_input_value(uv_node, "V", float(getattr(sampler, "scale_v", 1.0)))
             uv_out = _get_group_socket(uv_node, "UV", output=True)
             if uv_out is not None:
-                try:
+                with contextlib.suppress(KeyError, RuntimeError, TypeError, ValueError):
                     links.new(uv_out, tex_node.inputs["Vector"])
-                except (KeyError, RuntimeError, TypeError, ValueError):
-                    pass
 
         texture_nodes.append(tex_node)
         mat[f"nsk_sampler_{sampler_index:02d}_role"] = role_name
@@ -406,10 +399,8 @@ def apply_nsk_placeholder_material(
     ) -> None:
         if output_socket is None or input_socket is None:
             return
-        try:
+        with contextlib.suppress(RuntimeError, TypeError, ValueError):
             links.new(output_socket, input_socket)
-        except (RuntimeError, TypeError, ValueError):
-            pass
 
     def _connect_surface_to_output(surface_socket: bpy.types.NodeSocket | None) -> None:
         if surface_socket is None:
@@ -900,6 +891,7 @@ def import_nsk(
     tris_to_quads: bool = False,
     split_submeshes: bool = True,
     return_armature: bool = False,
+    reuse_materials: bool = True,
     warn: Callable[[str], None] | None = None,
     emb_override: str = "",
     emm_override: str = "",
@@ -926,6 +918,7 @@ def import_nsk(
         source_format="NSK",
         disable_dyt=True,
         force_shader_template="shader",
+        reuse_materials=reuse_materials,
         emb_override=emb_override,
         emm_override=emm_override,
     )

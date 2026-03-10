@@ -204,6 +204,7 @@ def import_map_in_steps(
     import_colliders: bool = True,
     import_collision_meshes: bool = True,
     use_collection_instances: bool = True,
+    reuse_materials: bool = True,
 ) -> Iterator[tuple[int, int, str]]:
     fmp = parse_fmp(path)
     map_name = map_name_from_path(path) or "XV2_MAP"
@@ -537,6 +538,7 @@ def import_map_in_steps(
                         tris_to_quads=tris_to_quads,
                         split_submeshes=split_submeshes,
                         return_armature=True,
+                        reuse_materials=reuse_materials,
                         warn=warn,
                         emb_override=emb_override_str,
                         emm_override=emm_override_str,
@@ -599,7 +601,8 @@ def import_map_in_steps(
             yield (
                 done_steps,
                 total_steps,
-                f"[MAP] {map_name}: object {object_index + 1}/{object_count}, instance {instance_index + 1}/{instance_count}",
+                f"[MAP] {map_name}: object {object_index + 1}/{object_count}, "
+                f"instance {instance_index + 1}/{instance_count}",
             )
 
     if done_steps < total_steps:
@@ -620,6 +623,7 @@ def import_map(
     import_colliders: bool = True,
     import_collision_meshes: bool = True,
     use_collection_instances: bool = True,
+    reuse_materials: bool = True,
 ) -> bpy.types.Object | None:
     iterator = import_map_in_steps(
         path=path,
@@ -633,6 +637,7 @@ def import_map(
         import_colliders=import_colliders,
         import_collision_meshes=import_collision_meshes,
         use_collection_instances=use_collection_instances,
+        reuse_materials=reuse_materials,
     )
     while True:
         try:

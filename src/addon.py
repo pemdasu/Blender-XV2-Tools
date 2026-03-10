@@ -108,6 +108,11 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         name="Split into submeshes",
         default=False,
     )
+    reuse_materials: BoolProperty(  # type: ignore
+        name="Reuse Materials",
+        description="Reuse existing materials by name when the shader template matches",
+        default=True,
+    )
     preserve_structure: BoolProperty(  # type: ignore
         name="Preserve EMD hierarchy (empties)",
         default=False,
@@ -134,6 +139,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         layout.prop(self, "dyt_entry_index")
         layout.prop(self, "tris_to_quads")
         layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "reuse_materials")
         if self.auto_merge_by_distance:
             layout.prop(self, "merge_distance")
         if not self.auto_detect_esk:
@@ -187,6 +193,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
                 return_armature=True,
                 preserve_structure=self.preserve_structure,
                 dyt_entry_index=self.dyt_entry_index,
+                reuse_materials=self.reuse_materials,
                 warn=lambda msg: self.report({"WARNING"}, msg),
             )
 
@@ -244,6 +251,11 @@ class IMPORT_OT_nsk(Operator, ImportHelper):
         name="Split into submeshes",
         default=True,
     )
+    reuse_materials: BoolProperty(  # type: ignore
+        name="Reuse Materials",
+        description="Reuse existing materials by name when the shader template matches",
+        default=True,
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -251,6 +263,7 @@ class IMPORT_OT_nsk(Operator, ImportHelper):
         layout.prop(self, "import_tangents")
         layout.prop(self, "tris_to_quads")
         layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "reuse_materials")
         if self.auto_merge_by_distance:
             layout.prop(self, "merge_distance")
 
@@ -276,6 +289,7 @@ class IMPORT_OT_nsk(Operator, ImportHelper):
                 self.tris_to_quads,
                 self.split_into_submeshes,
                 return_armature=False,
+                reuse_materials=self.reuse_materials,
                 warn=lambda msg: self.report({"WARNING"}, msg),
             )
 
@@ -327,6 +341,11 @@ class IMPORT_OT_map(Operator, ImportHelper):
         name="Split into submeshes",
         default=True,
     )
+    reuse_materials: BoolProperty(  # type: ignore
+        name="Reuse Materials",
+        description="Reuse existing materials by name when the shader template matches",
+        default=True,
+    )
     import_colliders: BoolProperty(  # type: ignore
         name="Import colliders",
         description="Create collider empties and collider custom properties",
@@ -359,6 +378,7 @@ class IMPORT_OT_map(Operator, ImportHelper):
         layout.prop(self, "import_tangents")
         layout.prop(self, "tris_to_quads")
         layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "reuse_materials")
         if self.auto_merge_by_distance:
             layout.prop(self, "merge_distance")
         layout.prop(self, "import_colliders")
@@ -394,6 +414,7 @@ class IMPORT_OT_map(Operator, ImportHelper):
             import_colliders=self.import_colliders,
             import_collision_meshes=self.import_collision_meshes,
             use_collection_instances=self.use_collection_instances,
+            reuse_materials=self.reuse_materials,
             warn=lambda msg: self.report({"WARNING"}, msg),
         )
         print(f"[XV2 MAP] Importing {os.path.basename(self._active_path)}...")
@@ -570,7 +591,7 @@ class EXPORT_OT_map(Operator, ExportHelper):
     filename_ext = ".map"
     filter_glob: StringProperty(default="*.map", options={"HIDDEN"})  # type: ignore
     export_collision_meshes: BoolProperty(  # type: ignore
-        name="Export collision meshes",
+        name="Export collision meshes (EXPERIMENTAL)",
         description=(
             "Write edited collider mesh vertices/triangles back into source MAP collision data "
             "when possible"
@@ -578,9 +599,9 @@ class EXPORT_OT_map(Operator, ExportHelper):
         default=False,
     )
     export_linked_nsk: BoolProperty(  # type: ignore
-        name="Export linked NSK files",
+        name="Export linked NSK files (EXPERIMENTAL)",
         description=(
-            "Also export NSK armatures referenced by MAP entities using their MAP relative paths"
+            "Also export NSK files referenced by MAP entities using their MAP relative paths"
         ),
         default=False,
     )
