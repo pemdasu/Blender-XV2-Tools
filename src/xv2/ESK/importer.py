@@ -6,7 +6,7 @@ import bpy
 from .ESK import build_armature, parse_esk
 
 
-def import_esk(path: str) -> bpy.types.Object | None:
+def import_esk(path: str, preserve_bone_axes: bool = False) -> bpy.types.Object | None:
     try:
         esk = parse_esk(path)
     except (OSError, ValueError, struct.error) as exc:
@@ -14,7 +14,7 @@ def import_esk(path: str) -> bpy.types.Object | None:
         return None
 
     arm_name = esk.bones[0].name if esk.bones else "Armature"
-    arm_obj = build_armature(esk, arm_name)
+    arm_obj = build_armature(esk, arm_name, preserve_bone_axes=preserve_bone_axes)
     arm_obj.name = arm_name
     arm_obj["esk_source_path"] = path
     arm_obj["esk_version"] = int(esk.version)

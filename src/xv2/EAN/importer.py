@@ -89,6 +89,7 @@ def _get_rest_matrices(
     ean: EANFile,
     target_armature: bpy.types.Object | None,
     transform_ref: bpy.types.Object | None = None,
+    preserve_bone_axes: bool = False,
 ) -> tuple[
     bpy.types.Object | None,
     dict[str, mathutils.Matrix],  # ean local
@@ -103,7 +104,11 @@ def _get_rest_matrices(
     if armature_obj is None:
         _create_skeleton_matrices(ean.skeleton)
         arm_name = ean.skeleton.bones[0].name if ean.skeleton.bones else "Armature"
-        armature_obj = build_armature(ean.skeleton, armature_name=arm_name)
+        armature_obj = build_armature(
+            ean.skeleton,
+            armature_name=arm_name,
+            preserve_bone_axes=preserve_bone_axes,
+        )
         if armature_obj:
             armature_obj.name = arm_name
             if armature_obj.data:
@@ -329,10 +334,28 @@ def import_ean_animations(
     path: str,
     target_armature: bpy.types.Object | None = None,
     replace_armature: bool = False,
+    preserve_bone_axes: bool = False,
 ) -> bpy.types.Object | None:
     ean: EANFile = read_ean(path, link_skeleton=True)
+    return import_ean_data(
+        ean,
+        source_path=path,
+        target_armature=target_armature,
+        replace_armature=replace_armature,
+        preserve_bone_axes=preserve_bone_axes,
+    )
+
+
+def import_ean_data(
+    ean: EANFile,
+    *,
+    source_path: str,
+    target_armature: bpy.types.Object | None = None,
+    replace_armature: bool = False,
+    preserve_bone_axes: bool = False,
+) -> bpy.types.Object | None:
     if ean.is_camera:
-        import_cam_ean(path)
+        import_cam_ean(source_path)
         return None
 
     def _relink_armature(old_arm: bpy.types.Object, new_arm: bpy.types.Object) -> None:
@@ -379,6 +402,7 @@ def import_ean_animations(
         ean,
         None if replace_armature else target_armature,
         transform_ref=target_armature if replace_armature else None,
+        preserve_bone_axes=preserve_bone_axes,
     )
     if arm_obj is None:
         print("import_ean_animations: select an armature before importing.")
@@ -402,7 +426,7 @@ def import_ean_animations(
             with contextlib.suppress(RuntimeError):
                 bpy.data.armatures.remove(arm_data, do_unlink=True)
 
-    arm_obj["ean_source"] = os.path.abspath(path)
+    arm_obj["ean_source"] = os.path.abspath(source_path)
     arm_obj["ean_i08"] = int(ean.i_08)
     arm_obj["ean_i17"] = int(ean.i_17)
 
@@ -472,4 +496,4 @@ def import_ean_animations(
     return arm_obj
 
 
-__all__ = ["import_cam_ean", "import_ean_animations"]
+__all__ = ["import_cam_ean", "import_ean_animations", "import_ean_data"]
