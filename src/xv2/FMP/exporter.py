@@ -35,10 +35,11 @@ from .FMP import (
     to_xv2_axis,
 )
 
-_OBJECT_NAME_RE = re.compile(r"^(?P<base>.+)_object(?:_(?P<instance>\d{3}))?$")
+_OBJECT_NAME_RE = re.compile(r"^(?P<base>.+)_object(?:_(?P<instance>\d{3}))?(?:\.\d{3})?$")
 _ENTITY_NAME_RE = re.compile(
-    r"^(?P<prefix>.+)_(?P<entity>.+)_entity(?:_(?P<entity_idx>\d{2}))(?:_(?P<instance_idx>\d{3}))?$"
+    r"^(?P<prefix>.+)_(?P<entity>.+)_entity(?:_(?P<entity_idx>\d{2}))(?:_(?P<instance_idx>\d{3}))?(?:\.\d{3})?$"
 )
+_BLENDER_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.\d{3}$")
 _AXIS3_BLENDER_TO_XV2 = AXIS_BLENDER_TO_XV2.to_3x3()
 CollisionMeshData = tuple[
     list[tuple[float, float, float]],
@@ -125,6 +126,13 @@ def _as_str(value, default: str = "") -> str:
     return str(value)
 
 
+def _strip_blender_duplicate_suffix(name: str) -> str:
+    match = _BLENDER_DUPLICATE_SUFFIX_RE.match(name)
+    if match is None:
+        return name
+    return _as_str(match.group("base"), name)
+
+
 def _parse_json(value: str, default):
     raw = (value or "").strip()
     if not raw:
@@ -136,8 +144,13 @@ def _parse_json(value: str, default):
 
 
 def _is_map_object(obj: bpy.types.Object) -> bool:
-    return obj.type == "EMPTY" and (
-        "fmp_object_index" in obj or _OBJECT_NAME_RE.match(obj.name) is not None
+    if obj.type != "EMPTY":
+        return False
+    if "fmp_object_index" in obj or _OBJECT_NAME_RE.match(obj.name) is not None:
+        return True
+    return any(
+        child.type == "ARMATURE" or _is_entity(child) or _is_collider(child)
+        for child in obj.children
     )
 
 
@@ -160,12 +173,15 @@ def _is_collider(obj: bpy.types.Object) -> bool:
 
 
 def _object_name(obj: bpy.types.Object) -> str:
-    object_name = obj.get("fmp_object_name")
-    if object_name is not None:
-        return _as_str(object_name, obj.name)
     match = _OBJECT_NAME_RE.match(obj.name)
     if match is not None:
         return _as_str(match.group("base"), obj.name)
+    stripped_name = _strip_blender_duplicate_suffix(obj.name).strip()
+    if stripped_name:
+        return stripped_name
+    object_name = obj.get("fmp_object_name")
+    if object_name is not None:
+        return _as_str(object_name, obj.name)
     return obj.name
 
 
@@ -597,10 +613,11 @@ def _group_objects(map_root: bpy.types.Object) -> list[list[bpy.types.Object]]:
     for child in map_root.children:
         if not _is_map_object(child):
             continue
+        object_name = _object_name(child)
         if "fmp_object_index" in child:
-            group_key = f"idx:{_as_int(child.get('fmp_object_index'))}"
+            group_key = f"idx:{_as_int(child.get('fmp_object_index'))}:name:{object_name}"
         else:
-            group_key = f"name:{_object_name(child)}"
+            group_key = f"name:{object_name}"
         grouped[group_key].append(child)
 
     groups = list(grouped.values())
@@ -626,6 +643,9 @@ def collect_map_export_plan(
         ),
     )
 
+    grouped_objects: list[
+        tuple[list[bpy.types.Object], bpy.types.Object, str, int | None, bool]
+    ] = []
     for object_group in _group_objects(map_root):
         object_group_sorted = sorted(
             object_group,
@@ -633,12 +653,58 @@ def collect_map_export_plan(
         )
         base_obj = object_group_sorted[0]
         object_name = _object_name(base_obj)
+        object_index = (
+            _as_int(base_obj.get("fmp_object_index"), -1)
+            if "fmp_object_index" in base_obj
+            else None
+        )
+        source_name_matches = (
+            _as_str(base_obj.get("fmp_object_name"), "") == object_name
+            if "fmp_object_name" in base_obj
+            else False
+        )
+        grouped_objects.append(
+            (
+                object_group_sorted,
+                base_obj,
+                object_name,
+                object_index,
+                source_name_matches,
+            )
+        )
+
+    grouped_objects.sort(
+        key=lambda item: (
+            item[3] if item[3] is not None else 10_000_000,
+            0 if item[4] else 1,
+            item[2],
+            item[1].name,
+        )
+    )
+    used_object_indices: set[int] = set()
+
+    for (
+        object_group_sorted,
+        base_obj,
+        object_name,
+        object_index,
+        _source_name_matches,
+    ) in grouped_objects:
+        export_index = object_index
+        if export_index is not None:
+            if export_index in used_object_indices:
+                if warn:
+                    warn(
+                        f"Object '{object_name}' reuses fmp_object_index {export_index}; "
+                        "treating it as a new MAP object."
+                    )
+                export_index = None
+            else:
+                used_object_indices.add(export_index)
 
         instance_json = _as_str(base_obj.get("fmp_instance_data_json"), "")
         export_object = FMPExportObject(
-            index=_as_int(base_obj.get("fmp_object_index"), -1)
-            if "fmp_object_index" in base_obj
-            else None,
+            index=export_index,
             name=object_name,
             i_04=_as_int(base_obj.get("fmp_i_04"), _as_int(base_obj.get("fmp_object_index"), 0)),
             initial_entity_index=_as_int(base_obj.get("fmp_initial_entity_index"), 0),
@@ -1012,9 +1078,13 @@ def _merge_plan_into_source(plan: FMPExportPlan, source_fmp: FMPFile) -> FMPFile
     merged = copy.deepcopy(source_fmp)
     if plan.version > 0:
         merged.version = int(plan.version)
+    used_target_indices: set[int] = set()
     for plan_object in plan.objects:
         target_index = plan_object.index
+        if target_index is not None and target_index in used_target_indices:
+            target_index = None
         if target_index is not None and 0 <= target_index < len(merged.objects):
+            used_target_indices.add(target_index)
             merged.objects[target_index] = _object_from_plan(
                 plan_object, merged.objects[target_index]
             )

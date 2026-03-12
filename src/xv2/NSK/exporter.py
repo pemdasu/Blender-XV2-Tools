@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import re
 import struct
 from pathlib import Path
 
@@ -19,6 +20,15 @@ from ..ESK.exporter import (
 )
 from .NSK import NSK_EMD_OFFSET_ADDRESS
 
+_BLENDER_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.\d{3}$")
+
+
+def _strip_blender_duplicate_suffix(name: str) -> str:
+    match = _BLENDER_DUPLICATE_SUFFIX_RE.match(name)
+    if match is None:
+        return name
+    return str(match.group("base"))
+
 
 def _strip_suffix(name: str, suffix: str) -> str:
     if name.endswith(suffix):
@@ -27,17 +37,19 @@ def _strip_suffix(name: str, suffix: str) -> str:
 
 
 def _empty_bone_name(name: str) -> str:
-    if name.endswith("_model"):
-        return _strip_suffix(name, "_model").strip()
-    if name.endswith("_mesh"):
-        return _strip_suffix(name, "_mesh").strip()
+    normalized_name = _strip_blender_duplicate_suffix(name)
+    if normalized_name.endswith("_model"):
+        return _strip_suffix(normalized_name, "_model").strip()
+    if normalized_name.endswith("_mesh"):
+        return _strip_suffix(normalized_name, "_mesh").strip()
     return ""
 
 
 def _empty_kind(name: str) -> str | None:
-    if name.endswith("_model"):
+    normalized_name = _strip_blender_duplicate_suffix(name)
+    if normalized_name.endswith("_model"):
         return "model"
-    if name.endswith("_mesh"):
+    if normalized_name.endswith("_mesh"):
         return "mesh"
     return None
 
