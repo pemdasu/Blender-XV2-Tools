@@ -65,6 +65,10 @@ _entry_icon_paths = {
 }
 
 
+def _is_obj_ema_path(path: str) -> bool:
+    return path.lower().endswith(".obj.ema")
+
+
 # ---------------------------------------------------------------------------
 # Import operator
 # ---------------------------------------------------------------------------
@@ -954,8 +958,8 @@ class IMPORT_OT_ema(Operator, ImportHelper):
     bl_idname = "import_scene.xv2_ema"
     bl_label = "Import EMA (Xenoverse 2)"
 
-    filename_ext = ".ema"
-    filter_glob: StringProperty(default="*.ema", options={"HIDDEN"})  # type: ignore
+    filename_ext = ".obj.ema"
+    filter_glob: StringProperty(default="*.obj.ema", options={"HIDDEN"})  # type: ignore
     replace_armature: BoolProperty(  # type: ignore
         name="Replace selected armature",
         description="Ignore the selected armature and build one from the EMA skeleton",
@@ -967,6 +971,9 @@ class IMPORT_OT_ema(Operator, ImportHelper):
         layout.prop(self, "replace_armature")
 
     def execute(self, context):
+        if not _is_obj_ema_path(self.filepath):
+            self.report({"ERROR"}, "Only .obj.ema files are supported.")
+            return {"CANCELLED"}
         target = context.object if context.object and context.object.type == "ARMATURE" else None
         try:
             arm = import_ema_animations(
@@ -1052,8 +1059,8 @@ class EXPORT_OT_ema(Operator, ExportHelper):
     bl_idname = "export_scene.xv2_ema"
     bl_label = "Export EMA (Xenoverse 2)"
 
-    filename_ext = ".ema"
-    filter_glob: StringProperty(default="*.ema", options={"HIDDEN"})  # type: ignore
+    filename_ext = ".obj.ema"
+    filter_glob: StringProperty(default="*.obj.ema", options={"HIDDEN"})  # type: ignore
     add_dummy_rest_keys: BoolProperty(  # type: ignore
         name="Add Dummy Keyframes",
         description="Add a rest pose keyframe at frame 0 for bones with no keyframes",
@@ -1061,6 +1068,9 @@ class EXPORT_OT_ema(Operator, ExportHelper):
     )
 
     def execute(self, context):
+        if not _is_obj_ema_path(self.filepath):
+            self.report({"ERROR"}, "EMA export only writes .obj.ema files.")
+            return {"CANCELLED"}
         arm = context.object if context.object and context.object.type == "ARMATURE" else None
         if arm is None:
             self.report({"ERROR"}, "Select an armature to export.")
