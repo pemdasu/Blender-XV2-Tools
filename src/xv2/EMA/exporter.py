@@ -170,6 +170,7 @@ def _build_ema_animation_bytes(animation, bone_index_by_name: dict[str, int]) ->
     command_ptrs_start = len(out)
     out.extend(b"\x00" * (4 * len(commands)))
     values: list[float] = []
+    value_index_by_bytes: dict[bytes, int] = {}
 
     for command_index, (bone_index, parameter, axis, keyframes) in enumerate(commands):
         command_start = len(out)
@@ -204,10 +205,14 @@ def _build_ema_animation_bytes(animation, bone_index_by_name: dict[str, int]) ->
         struct.pack_into("<H", out, index_offset_field, index_offset & 0xFFFF)
 
         for _frame, value in keyframes:
-            value_index = len(values)
-            if value_index > 0xFFFF:
-                raise ValueError("EMA export value table exceeded 65535 entries.")
-            values.append(float(value))
+            packed_value = struct.pack("<f", float(value))
+            value_index = value_index_by_bytes.get(packed_value)
+            if value_index is None:
+                value_index = len(values)
+                if value_index > 0xFFFF:
+                    raise ValueError("EMA export value table exceeded 65535 unique entries.")
+                values.append(struct.unpack("<f", packed_value)[0])
+                value_index_by_bytes[packed_value] = value_index
             out.extend(struct.pack("<H", value_index & 0xFFFF))
             out.extend(struct.pack("<B", 0))  # padding
             out.extend(struct.pack("<B", 0))  # linear interpolation
