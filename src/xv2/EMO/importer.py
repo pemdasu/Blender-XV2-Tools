@@ -40,7 +40,7 @@ def import_emo(
         warn=warn,
         preloaded_emd=emo.emd_file,
         preloaded_esk=emo.skeleton,
-        source_format="EMD",
+        source_format="EMO",
         preserve_bone_axes=True,
         disable_dyt=False,
         force_shader_template=None,

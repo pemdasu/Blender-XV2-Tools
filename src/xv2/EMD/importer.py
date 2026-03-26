@@ -565,6 +565,7 @@ def import_emd(
     emd: EMD_File = preloaded_emd if preloaded_emd is not None else parse_emd(path)
     nsk_has_bones_entries = source_tag == "NSK" and _emd_has_any_triangle_bones(emd)
     nsk_use_rigid_model_placement = source_tag == "NSK" and not nsk_has_bones_entries
+    use_linked_model_placement = source_tag == "EMO"
     emb_main = None
     emb_dyt = None
     emb_override_path = (emb_override or "").strip()
@@ -692,21 +693,29 @@ def import_emd(
 
     for model in emd.models:
         model_bone_name = (model.name or "").strip()
-        model_bone = _find_armature_bone(arm_obj, model_bone_name) if source_tag == "NSK" else None
+        model_bone = (
+            _find_armature_bone(arm_obj, model_bone_name) if source_tag in {"NSK", "EMO"} else None
+        )
         model_has_named_bone = bool(model_bone_name and model_bone is not None)
+        model_world_matrix = (
+            _get_esk_world_matrix_by_bone_name(esk, model_bone_name)
+            if model_has_named_bone
+            else None
+        )
         model_parent = None
         if preserve_structure:
             # Empty to represent the EMD model
             model_empty_name = f"{model.name}_model" if model.name else "EMD_Model"
             model_parent = bpy.data.objects.new(model_empty_name, None)
             bpy.context.collection.objects.link(model_parent)
-            if nsk_use_rigid_model_placement and model_has_named_bone:
+            if (
+                nsk_use_rigid_model_placement or use_linked_model_placement
+            ) and model_has_named_bone:
                 if arm_obj:
                     model_parent.parent = arm_obj
-                esk_model_matrix = _get_esk_world_matrix_by_bone_name(esk, model_bone_name)
-                if esk_model_matrix is not None:
-                    # Use raw ESK world transform so rigid NSK placement matches source data.
-                    model_parent.matrix_local = esk_model_matrix
+                if model_world_matrix is not None:
+                    # Use raw skeleton placement so linked rigid parts match source data.
+                    model_parent.matrix_local = model_world_matrix
                 else:
                     # Fallback when matrix lookup fails.
                     model_parent.location = model_bone.head_local.copy()
@@ -747,6 +756,8 @@ def import_emd(
                     obj.parent = structure_parents[mesh]
                 elif arm_obj:
                     obj.parent = arm_obj
+                    if use_linked_model_placement and model_world_matrix is not None:
+                        obj.matrix_local = model_world_matrix
 
                 max_index = len(sub.vertices) - 1
                 built_positions: list[tuple[float, float, float]] = []
