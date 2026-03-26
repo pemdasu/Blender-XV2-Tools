@@ -213,9 +213,7 @@ def _parse_emg_mesh(data: bytes, mesh_offset: int) -> EMGMesh:
         for texture_index in range(texture_lists_count):
             texture_offset = mesh_offset + int(u32(data, texture_ptr_offset + (texture_index * 4)))
             sampler_count = int(u32(data, texture_offset + 0))
-            texture_lists.append(
-                read_texture_sampler_defs(data, texture_offset + 4, sampler_count)
-            )
+            texture_lists.append(read_texture_sampler_defs(data, texture_offset + 4, sampler_count))
 
     submeshes: list[EMGSubmesh] = []
     for submesh_index in range(submesh_count):
@@ -369,9 +367,7 @@ def _flatten_faces(faces: list[tuple[int, int, int]]) -> list[int]:
 
 def convert_emd_to_emo_parts(emd: EMD_File, skeleton: ESK_File) -> tuple[list[EMOPart], int]:
     bone_index_by_name = {
-        bone.name: bone.index
-        for bone in skeleton.bones
-        if getattr(bone, "name", None)
+        bone.name: bone.index for bone in skeleton.bones if getattr(bone, "name", None)
     }
     parts: list[EMOPart] = []
     materials_count = 0
@@ -570,8 +566,7 @@ def _encode_vertex_blob(vertices: list[EMD_Vertex], flags: int) -> bytes:
                 ids.append(0)
             blob.extend(struct.pack("<4B", ids[0], ids[1], ids[2], ids[3]))
             weights = [
-                float(weight)
-                for weight in (vertex.bone_weights or [0.0, 0.0, 0.0, 0.0])[:4]
+                float(weight) for weight in (vertex.bone_weights or [0.0, 0.0, 0.0, 0.0])[:4]
             ]
             while len(weights) < 4:
                 weights.append(0.0)
