@@ -5,6 +5,8 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import mathutils
+
 from ...utils import half_to_float, read_cstring
 from ...utils.binary import f32, i16, i32, u16
 from ..ESK.ESK import ESK_Bone, ESK_File
@@ -136,19 +138,25 @@ class _EANParser:
             px, py, pz, pw, rx, ry, rz, rw, sx, sy, sz, sw = struct.unpack_from(
                 "<12f", self.data, t_off
             )
+            position = (px * pw, py * pw, pz * pw)
+            rotation = (rw, rx, ry, rz)
+            scale = (sx * sw, sy * sw, sz * sw)
 
             bone = ESK_Bone(
                 name=name,
                 index=bone_index,
-                matrix=None,  # Not building matrices here
+                matrix=mathutils.Matrix.LocRotScale(
+                    mathutils.Vector(position),
+                    mathutils.Quaternion(rotation),
+                    mathutils.Vector(scale),
+                ),
                 parent_index=parent_idx,
                 child_index=child_idx,
                 sibling_index=sibling_idx,
             )
-            # Store raw transform values for reference
-            bone.position = (px * pw, py * pw, pz * pw)
-            bone.rotation = (rw, rx, ry, rz)
-            bone.scale = (sx * sw, sy * sw, sz * sw)
+            bone.position = position
+            bone.rotation = rotation
+            bone.scale = scale
             skeleton.bones.append(bone)
 
         return skeleton
