@@ -19,9 +19,9 @@ More thanks to ChaosBeat for creating the basic shader used in this tool
 | EMM | ✅ | ❌ ||
 | NSK | ✅ | ✅ ||
 | MAP | ✅ | ✅ ||
+| EMO | ✅ | ✅ ||
+| EMA | ✅ | ✅ | only .obj.ema files |
 | BCS | ⏳ | ❌ ||
-| EMO | ⏳ | ⏳ ||
-| EMA | ⏳ | ⏳ | probably not mat.ema files only obj.ema |
 
 ✅ supported • ❌ not supported/not planned yet • ⏳ planned
 
@@ -54,6 +54,7 @@ python build_addon.py
 - Export EMD sometimes doesn't detect you have the meshes selected
 - Export EMD asks you for a filename despite always taking whatever the mesh name is
 - Some shaders that the game uses aren't supported and don't display properly in Blender
+- EMO shader support is limited.
 - For all file types, it is recommended to import the existing asset first, then edit and export from that import to help avoid file inaccuracies or corruption
 - If an exported file causes a crash, it is recommended to use the XML Serializer and paste the changed data from the exported file into the original file
 
@@ -61,3 +62,4 @@ python build_addon.py
 
 - Open issues/PRs are welcome. Please keep changes Blender-4.0.2-compatible unless otherwise discussed.
 - Include a brief note in `CHANGELOG.md` for user-visible changes.
+

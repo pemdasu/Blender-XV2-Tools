@@ -476,12 +476,17 @@ def _apply_shader_material(
         else:
             _apply_dyt_entry(dyt_entries[selected_idx], emb_dyt.path)
 
+    def _skip_matcol_import() -> bool:
+        return use_unif_env or use_toon_uniffx
+
     def _apply_params_to_group(group_name: str) -> None:
         group_node = nodes.get(group_name)
         if not (group_node and hasattr(group_node, "inputs") and emm_info):
             return
         for param in emm_info.params:
             if "ON/OFF" in param.name:
+                continue
+            if _skip_matcol_import() and param.name.startswith("MatCol"):
                 continue
             try:
                 val = float(param.value)
@@ -490,6 +495,11 @@ def _apply_shader_material(
             if param.name in group_node.inputs:
                 with contextlib.suppress(TypeError, ValueError, AttributeError):
                     group_node.inputs[param.name].default_value = val
+        if _skip_matcol_import():
+            for input_name in ("MatCol0R", "MatCol0G", "MatCol0B"):
+                if input_name in group_node.inputs:
+                    with contextlib.suppress(TypeError, ValueError, AttributeError):
+                        group_node.inputs[input_name].default_value = 0.0
 
     _apply_params_to_group("XV2_BASIC_SHADER")
     _apply_params_to_group("XV2_BASIC_EYE_SHADER")

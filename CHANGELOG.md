@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Added EMO import and export support
+- Added EMA import and export support for `.obj.ema` files
+
 ## 1.0.9
 
 - Added support for NSK and MAP/FMP import and export (MAP export options `Export collision meshes` and `Export linked NSK files` are experimental)
