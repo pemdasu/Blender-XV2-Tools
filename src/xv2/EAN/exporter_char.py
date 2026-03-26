@@ -7,7 +7,13 @@ import bpy
 import mathutils
 
 from ...utils import read_cstring
-from ..ESK.ESK import ESK_Bone, ESK_File
+from ..ESK.ESK import (
+    ESK_Bone,
+    ESK_File,
+    get_source_local_matrix,
+    get_source_root_matrix,
+    get_source_root_name,
+)
 from .EAN import ComponentType
 
 
@@ -99,7 +105,9 @@ def _build_skeleton_from_armature(
     rest_locals: dict[str, mathutils.Matrix] = {}
     arm_bones = list(arm_obj.data.bones)
 
-    root_bone = ESK_Bone(arm_obj.name, 0, mathutils.Matrix.Identity(4), -1, -1, -1)
+    root_name = get_source_root_name(arm_obj) or arm_obj.name
+    root_matrix = get_source_root_matrix(arm_obj) or mathutils.Matrix.Identity(4)
+    root_bone = ESK_Bone(root_name, 0, root_matrix.copy(), -1, -1, -1)
     bones.append(root_bone)
 
     bone_indices = {bone.name: idx + 1 for idx, bone in enumerate(arm_bones)}
@@ -111,6 +119,9 @@ def _build_skeleton_from_armature(
             if bone.parent
             else bone.matrix_local.copy()
         )
+        source_local_mat = get_source_local_matrix(bone)
+        if source_local_mat is not None:
+            local_mat = source_local_mat.copy()
         rest_locals[bone.name] = local_mat.copy()
         esk_bone = ESK_Bone(bone.name, idx + 1, local_mat, parent_idx, -1, -1)
         bones.append(esk_bone)

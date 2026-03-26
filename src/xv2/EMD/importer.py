@@ -354,8 +354,25 @@ def _apply_shader_material(
     msk_toggle = nodes.get("XV2_MSK_EMB_TOGGLE")
     shader_name = (getattr(emm_info, "shader", "") or "").upper()
     use_unif_env = "UNIF_ENV" in shader_name
+    use_toon_uniffx = "TOON_UNIFFX" in shader_name
+    toon_uniffx_dyt_entry = None
 
-    main_img = _image_from_sampler(sampler_defs, 0, emb_main, warn=warn)
+    main_sampler_index = 0
+    if use_toon_uniffx and sampler_defs:
+        if len(sampler_defs) > 1:
+            # TOON_UNIFfx usually keeps DYT in sampler slot 0 and diffuse in slot 1.
+            main_sampler_index = 1
+        if emb_main is not None:
+            dyt_tex_index = int(sampler_defs[0].texture_index)
+            if 0 <= dyt_tex_index < len(emb_main.entries):
+                toon_uniffx_dyt_entry = emb_main.entries[dyt_tex_index]
+            elif warn:
+                warn(
+                    f"TOON_UNIFfx DYT sampler index {dyt_tex_index} is out of range for "
+                    f"'{os.path.basename(emb_main.path)}'."
+                )
+
+    main_img = _image_from_sampler(sampler_defs, main_sampler_index, emb_main, warn=warn)
     dual_img = _image_from_sampler(sampler_defs, 2, emb_main, warn=warn)
 
     def _configure_image(tex_node: bpy.types.Node, img: bpy.types.Image, is_dyt: bool) -> None:
@@ -400,7 +417,46 @@ def _apply_shader_material(
         with contextlib.suppress(TypeError, ValueError):
             mat_scale = int(round(float(mat.get("emm_param_MatScale1X", 0))))
 
-    if emb_dyt:
+    def _apply_dyt_entry(dyt_entry, source_emb_path: str) -> None:
+        base_name = os.path.splitext(dyt_entry.name or f"DATA{dyt_entry.index:03d}.dds")[0]
+        dyt_image = load_emb_image(
+            dyt_entry,
+            source_emb_path,
+            base_override=f"{base_name}.dyt.dds",
+            warn=warn,
+        )
+        if dyt_image is None:
+            return
+
+        block_idx = max(0, mat_scale)
+        lines = _extract_dyt_lines(
+            dyt_image,
+            f"{emb_stem_from_path(source_emb_path)}_toon",
+            block_index=block_idx,
+            source_token=str(dyt_image.get("emb_source_token", "")),
+        )
+        primary = lines.get("p") or next(iter(lines.values()), None)
+        rim = lines.get("r")
+        spec = lines.get("s")
+        secondary = lines.get("d")
+
+        assign_map = {
+            "XV2_DYT_MAIN": primary,
+            "XV2_DYT_RIM": rim,
+            "XV2_DYT_SPEC": spec,
+            "XV2_DYT_DUAL": secondary,
+        }
+        for node_name, img_obj in assign_map.items():
+            node = nodes.get(node_name)
+            if node and img_obj:
+                _configure_image(node, img_obj, is_dyt=True)
+
+        # Keep only extracted DYT line images in the blend file.
+        _remove_image(dyt_image)
+
+    if use_toon_uniffx and toon_uniffx_dyt_entry is not None and emb_main is not None:
+        _apply_dyt_entry(toon_uniffx_dyt_entry, emb_main.path)
+    elif emb_dyt:
         dyt_entries = emb_dyt.entries or []
         requested_idx = max(0, int(dyt_entry_index))
         selected_idx = requested_idx
@@ -417,44 +473,11 @@ def _apply_shader_material(
         if selected_idx >= len(dyt_entries):
             if warn:
                 warn(f"DYT entry DATA000 was not found in '{emb_name}'. Skipping DYT import.")
-            dyt_entry = None
         else:
-            dyt_entry = dyt_entries[selected_idx]
+            _apply_dyt_entry(dyt_entries[selected_idx], emb_dyt.path)
 
-        if dyt_entry is not None:
-            base_name = os.path.splitext(dyt_entry.name or f"DATA{dyt_entry.index:03d}.dds")[0]
-            dyt_image = load_emb_image(
-                dyt_entry,
-                emb_dyt.path,
-                base_override=f"{base_name}.dyt.dds",
-                warn=warn,
-            )
-            if dyt_image:
-                block_idx = max(0, mat_scale)
-                lines = _extract_dyt_lines(
-                    dyt_image,
-                    f"{emb_stem_from_path(emb_dyt.path)}_toon",
-                    block_index=block_idx,
-                    source_token=str(dyt_image.get("emb_source_token", "")),
-                )
-                primary = lines.get("p") or next(iter(lines.values()), None)
-                rim = lines.get("r")
-                spec = lines.get("s")
-                secondary = lines.get("d")
-
-                assign_map = {
-                    "XV2_DYT_MAIN": primary,
-                    "XV2_DYT_RIM": rim,
-                    "XV2_DYT_SPEC": spec,
-                    "XV2_DYT_DUAL": secondary,
-                }
-                for node_name, img_obj in assign_map.items():
-                    node = nodes.get(node_name)
-                    if node and img_obj:
-                        _configure_image(node, img_obj, is_dyt=True)
-
-                # Keep only extracted DYT line images in the blend file.
-                _remove_image(dyt_image)
+    def _skip_matcol_import() -> bool:
+        return use_unif_env or use_toon_uniffx
 
     def _apply_params_to_group(group_name: str) -> None:
         group_node = nodes.get(group_name)
@@ -463,6 +486,8 @@ def _apply_shader_material(
         for param in emm_info.params:
             if "ON/OFF" in param.name:
                 continue
+            if _skip_matcol_import() and param.name.startswith("MatCol"):
+                continue
             try:
                 val = float(param.value)
             except (TypeError, ValueError):
@@ -470,6 +495,11 @@ def _apply_shader_material(
             if param.name in group_node.inputs:
                 with contextlib.suppress(TypeError, ValueError, AttributeError):
                     group_node.inputs[param.name].default_value = val
+        if _skip_matcol_import():
+            for input_name in ("MatCol0R", "MatCol0G", "MatCol0B"):
+                if input_name in group_node.inputs:
+                    with contextlib.suppress(TypeError, ValueError, AttributeError):
+                        group_node.inputs[input_name].default_value = 0.0
 
     _apply_params_to_group("XV2_BASIC_SHADER")
     _apply_params_to_group("XV2_BASIC_EYE_SHADER")
@@ -518,6 +548,7 @@ def import_emd(
     preloaded_emd: EMD_File | None = None,
     preloaded_esk: ESK_File | None = None,
     source_format: str = "EMD",
+    preserve_bone_axes: bool = False,
     disable_dyt: bool = False,
     force_shader_template: str | None = None,
     reuse_materials: bool = True,
@@ -544,6 +575,7 @@ def import_emd(
     emd: EMD_File = preloaded_emd if preloaded_emd is not None else parse_emd(path)
     nsk_has_bones_entries = source_tag == "NSK" and _emd_has_any_triangle_bones(emd)
     nsk_use_rigid_model_placement = source_tag == "NSK" and not nsk_has_bones_entries
+    use_linked_model_placement = source_tag == "EMO"
     emb_main = None
     emb_dyt = None
     emb_override_path = (emb_override or "").strip()
@@ -615,7 +647,7 @@ def import_emd(
     if esk is not None:
         arm_name = esk.bones[0].name if esk.bones else "Armature"
         if not arm_obj:
-            arm_obj = build_armature(esk, arm_name)
+            arm_obj = build_armature(esk, arm_name, preserve_bone_axes=preserve_bone_axes)
         if source_tag == "NSK":
             arm_obj.name = stem or arm_name
             arm_obj["esk_root_name_original"] = arm_name
@@ -646,7 +678,7 @@ def import_emd(
                 esk = parse_esk(esk_path)
                 arm_name = esk.bones[0].name if esk.bones else "Armature"
                 if not arm_obj:
-                    arm_obj = build_armature(esk, arm_name)
+                    arm_obj = build_armature(esk, arm_name, preserve_bone_axes=preserve_bone_axes)
                 if source_tag == "NSK":
                     arm_obj.name = stem or arm_name
                     arm_obj["esk_root_name_original"] = arm_name
@@ -671,21 +703,29 @@ def import_emd(
 
     for model in emd.models:
         model_bone_name = (model.name or "").strip()
-        model_bone = _find_armature_bone(arm_obj, model_bone_name) if source_tag == "NSK" else None
+        model_bone = (
+            _find_armature_bone(arm_obj, model_bone_name) if source_tag in {"NSK", "EMO"} else None
+        )
         model_has_named_bone = bool(model_bone_name and model_bone is not None)
+        model_world_matrix = (
+            _get_esk_world_matrix_by_bone_name(esk, model_bone_name)
+            if model_has_named_bone
+            else None
+        )
         model_parent = None
         if preserve_structure:
             # Empty to represent the EMD model
             model_empty_name = f"{model.name}_model" if model.name else "EMD_Model"
             model_parent = bpy.data.objects.new(model_empty_name, None)
             bpy.context.collection.objects.link(model_parent)
-            if nsk_use_rigid_model_placement and model_has_named_bone:
+            if (
+                nsk_use_rigid_model_placement or use_linked_model_placement
+            ) and model_has_named_bone:
                 if arm_obj:
                     model_parent.parent = arm_obj
-                esk_model_matrix = _get_esk_world_matrix_by_bone_name(esk, model_bone_name)
-                if esk_model_matrix is not None:
-                    # Use raw ESK world transform so rigid NSK placement matches source data.
-                    model_parent.matrix_local = esk_model_matrix
+                if model_world_matrix is not None:
+                    # Use raw skeleton placement so linked rigid parts match source data.
+                    model_parent.matrix_local = model_world_matrix
                 else:
                     # Fallback when matrix lookup fails.
                     model_parent.location = model_bone.head_local.copy()
@@ -726,6 +766,8 @@ def import_emd(
                     obj.parent = structure_parents[mesh]
                 elif arm_obj:
                     obj.parent = arm_obj
+                    if use_linked_model_placement and model_world_matrix is not None:
+                        obj.matrix_local = model_world_matrix
 
                 max_index = len(sub.vertices) - 1
                 built_positions: list[tuple[float, float, float]] = []

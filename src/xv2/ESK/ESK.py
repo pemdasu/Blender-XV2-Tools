@@ -8,6 +8,9 @@ from ...utils import read_cstring
 from ...utils.binary import i16, u16, u32, u64
 
 ESK_SIGNATURE = 1263748387
+SOURCE_LOCAL_MATRIX_PROP = "xv2SourceLocalMatrix"
+SOURCE_ROOT_MATRIX_PROP = "xv2SourceRootMatrix"
+SOURCE_ROOT_NAME_PROP = "xv2SourceRootName"
 
 
 class ESK_Bone:
@@ -38,6 +41,63 @@ class ESK_File:
         self.i_24: int = 0
         self.skeleton_flag: int = 0
         self.skeleton_id: int = 0
+
+
+def _flatten_matrix(matrix: mathutils.Matrix) -> list[float]:
+    return [float(matrix[row][col]) for row in range(4) for col in range(4)]
+
+
+def _matrix_from_prop(value) -> mathutils.Matrix | None:
+    if value is None:
+        return None
+    try:
+        items = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if len(items) != 16:
+        return None
+    return mathutils.Matrix(
+        (
+            (items[0], items[1], items[2], items[3]),
+            (items[4], items[5], items[6], items[7]),
+            (items[8], items[9], items[10], items[11]),
+            (items[12], items[13], items[14], items[15]),
+        )
+    )
+
+
+def get_source_local_matrix(bone) -> mathutils.Matrix | None:
+    return _matrix_from_prop(bone.get(SOURCE_LOCAL_MATRIX_PROP))
+
+
+def get_source_root_matrix(arm_obj: bpy.types.Object) -> mathutils.Matrix | None:
+    arm_data = getattr(arm_obj, "data", None)
+    if arm_data is None:
+        return None
+    return _matrix_from_prop(arm_data.get(SOURCE_ROOT_MATRIX_PROP))
+
+
+def get_source_root_name(arm_obj: bpy.types.Object) -> str | None:
+    arm_data = getattr(arm_obj, "data", None)
+    if arm_data is None:
+        return None
+    root_name = str(arm_data.get(SOURCE_ROOT_NAME_PROP, "")).strip()
+    return root_name or None
+
+
+def store_source_skeleton(arm_obj: bpy.types.Object, esk: ESK_File) -> None:
+    arm_data = getattr(arm_obj, "data", None)
+    if arm_data is None or not esk.bones:
+        return
+
+    arm_data[SOURCE_ROOT_NAME_PROP] = str(esk.bones[0].name or arm_obj.name)
+    arm_data[SOURCE_ROOT_MATRIX_PROP] = _flatten_matrix(esk.bones[0].matrix)
+
+    for source_bone in esk.bones[1:]:
+        arm_bone = arm_data.bones.get(source_bone.name)
+        if arm_bone is None:
+            continue
+        arm_bone[SOURCE_LOCAL_MATRIX_PROP] = _flatten_matrix(source_bone.matrix)
 
 
 def parse_esk_bytes(data: bytes) -> ESK_File:
@@ -105,7 +165,11 @@ def parse_esk(path: str) -> ESK_File:
     return parse_esk_bytes(data)
 
 
-def build_armature(esk: ESK_File, armature_name: str = "ESK_Armature") -> bpy.types.Object:
+def build_armature(
+    esk: ESK_File,
+    armature_name: str = "ESK_Armature",
+    preserve_bone_axes: bool = False,
+) -> bpy.types.Object:
     bpy.ops.object.add(type="ARMATURE", enter_editmode=True)
     arm_obj = bpy.context.object
     arm = arm_obj.data
@@ -150,44 +214,91 @@ def build_armature(esk: ESK_File, armature_name: str = "ESK_Armature") -> bpy.ty
         world_abs_mats[bone_data.index] = matrix
         return matrix
 
+    def get_bone_length(bone_data: ESK_Bone, head: mathutils.Vector) -> float:
+        length = 0.0
+        if 0 < bone_data.child_index < len(esk.bones):
+            child_bone = esk.bones[bone_data.child_index]
+            child_world = compute_world_abs(child_bone) or compute_world(child_bone)
+            length = (child_world.to_translation() - head).length
+        elif bone_data.matrix is not None:
+            length = bone_data.matrix.to_translation().length
+        if length <= 1e-6:
+            return 0.1
+        return length
+
+    def orient_edit_bone(
+        edit_bone: bpy.types.EditBone,
+        world_matrix: mathutils.Matrix,
+        bone_length: float,
+    ) -> None:
+        head = world_matrix.to_translation()
+        rotation_matrix = world_matrix.to_quaternion().to_matrix()
+
+        direction = rotation_matrix @ mathutils.Vector((0.0, 1.0, 0.0))
+        if direction.length <= 1e-6:
+            direction = mathutils.Vector((0.0, 1.0, 0.0))
+        else:
+            direction.normalize()
+
+        edit_bone.head = head
+        edit_bone.tail = head + (direction * bone_length)
+
+        # Keep the source z-axis as the roll reference so mirrored chains share orientation.
+        roll_ref = rotation_matrix @ mathutils.Vector((0.0, 0.0, 1.0))
+        if roll_ref.length <= 1e-6:
+            roll_ref = rotation_matrix @ mathutils.Vector((1.0, 0.0, 0.0))
+        if roll_ref.length > 1e-6:
+            roll_ref.normalize()
+            if abs(direction.dot(roll_ref)) > 0.999:
+                fallback_ref = rotation_matrix @ mathutils.Vector((1.0, 0.0, 0.0))
+                if fallback_ref.length > 1e-6:
+                    fallback_ref.normalize()
+                    if abs(direction.dot(fallback_ref)) <= 0.999:
+                        roll_ref = fallback_ref
+            if abs(direction.dot(roll_ref)) <= 0.999:
+                edit_bone.align_roll(roll_ref)
+
     for bone in bones:
         edit_bone = ebones_by_index[bone.index]
 
         is_thumb = "thumb" in (bone.name or "").lower()
-        if is_thumb:
-            world_matrix = compute_world_abs(bone) or compute_world(bone)
-            head = world_matrix.to_translation()
-            rotation_matrix = world_matrix.to_quaternion().to_matrix()
-            bone_length = 0.0
-            if 0 < bone.child_index < len(esk.bones):
-                child_bone = esk.bones[bone.child_index]
-                child_world = compute_world_abs(child_bone) or compute_world(child_bone)
-                bone_length = (child_world.to_translation() - head).length
-            elif bone.matrix is not None:
-                bone_length = bone.matrix.to_translation().length
-            if bone_length <= 1e-6:
-                bone_length = 0.1
-            direction = rotation_matrix @ mathutils.Vector((0.0, 1.0, 0.0))
-            if direction.length <= 1e-6:
-                direction = mathutils.Vector((0.0, 1.0, 0.0))
-            direction.normalize()
-
-            tail = head + (direction * bone_length)
-            edit_bone.head = head
-            edit_bone.tail = tail
-
-            ref_axis = rotation_matrix @ mathutils.Vector((1.0, 0.0, 0.0))
-            if ref_axis.length <= 1e-6:
-                ref_axis = mathutils.Vector((0.0, 0.0, 1.0))
-            edit_bone.align_roll(ref_axis)
-            edit_bone.roll -= math.radians(90.0)
+        if preserve_bone_axes:
+            if is_thumb:
+                world_matrix = compute_world_abs(bone) or compute_world(bone)
+                bone_length = get_bone_length(bone, world_matrix.to_translation())
+                orient_edit_bone(edit_bone, world_matrix, bone_length)
+                edit_bone.roll -= math.radians(90.0)
+            else:
+                world_matrix = compute_world(bone)
+                bone_length = get_bone_length(bone, world_matrix.to_translation())
+                orient_edit_bone(edit_bone, world_matrix, bone_length)
         else:
-            world_matrix = compute_world(bone)
-            head = world_matrix.to_translation()
-            rotation_matrix = world_matrix.to_3x3()
-            tail = head + (rotation_matrix @ mathutils.Vector((0.0, 0.1, 0.0)))
-            edit_bone.head = head
-            edit_bone.tail = tail
+            if is_thumb:
+                world_matrix = compute_world_abs(bone) or compute_world(bone)
+                head = world_matrix.to_translation()
+                rotation_matrix = world_matrix.to_quaternion().to_matrix()
+                bone_length = get_bone_length(bone, head)
+                direction = rotation_matrix @ mathutils.Vector((0.0, 1.0, 0.0))
+                if direction.length <= 1e-6:
+                    direction = mathutils.Vector((0.0, 1.0, 0.0))
+                direction.normalize()
+
+                tail = head + (direction * bone_length)
+                edit_bone.head = head
+                edit_bone.tail = tail
+
+                ref_axis = rotation_matrix @ mathutils.Vector((1.0, 0.0, 0.0))
+                if ref_axis.length <= 1e-6:
+                    ref_axis = mathutils.Vector((0.0, 0.0, 1.0))
+                edit_bone.align_roll(ref_axis)
+                edit_bone.roll -= math.radians(90.0)
+            else:
+                world_matrix = compute_world(bone)
+                head = world_matrix.to_translation()
+                rotation_matrix = world_matrix.to_3x3()
+                tail = head + (rotation_matrix @ mathutils.Vector((0.0, 0.1, 0.0)))
+                edit_bone.head = head
+                edit_bone.tail = tail
 
         if bone.parent_index > 0 and bone.parent_index in ebones_by_index:
             edit_bone.parent = ebones_by_index[bone.parent_index]
@@ -195,4 +306,5 @@ def build_armature(esk: ESK_File, armature_name: str = "ESK_Armature") -> bpy.ty
 
     bpy.ops.object.mode_set(mode="OBJECT")
     arm_obj.location = (0.0, 0.0, 0.0)
+    store_source_skeleton(arm_obj, esk)
     return arm_obj

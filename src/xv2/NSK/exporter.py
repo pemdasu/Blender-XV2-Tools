@@ -225,6 +225,8 @@ def _collect_direct_mesh_bone_specs(
 
 
 def _add_missing_direct_mesh_bones_to_skeleton(esk, arm_obj: bpy.types.Object) -> None:
+    if _has_structure_empties(arm_obj):
+        return
     specs = _collect_direct_mesh_bone_specs(arm_obj)
     _add_missing_bones_from_specs(esk, specs)
 

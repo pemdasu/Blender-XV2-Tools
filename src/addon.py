@@ -35,8 +35,12 @@ from .ui import (
 )
 from .xv2.EAN.exporter import export_cam_ean, export_ean
 from .xv2.EAN.importer import import_cam_ean, import_ean_animations
+from .xv2.EMA.exporter import export_ema
+from .xv2.EMA.importer import import_ema_animations
 from .xv2.EMD.exporter import export_selected
 from .xv2.EMD.importer import import_emd
+from .xv2.EMO.exporter import export_emo
+from .xv2.EMO.importer import import_emo
 from .xv2.ESK.exporter import export_esk
 from .xv2.ESK.importer import import_esk
 from .xv2.FMP.exporter import export_map
@@ -53,10 +57,16 @@ _entry_icon_paths = {
     "emd": _icon_dir / "icon_emd.png",
     "esk": _icon_dir / "icon_esk.png",
     "ean": _icon_dir / "icon_ean.png",
+    "ema": _icon_dir / "icon_ean.png",
     "cam": _icon_dir / "icon_cam.png",
+    "emo": _icon_dir / "icon_emo.png",
     "nsk": _icon_dir / "icon_nsk.png",
     "map": _icon_dir / "icon_map.png",
 }
+
+
+def _is_obj_ema_path(path: str) -> bool:
+    return path.lower().endswith(".obj.ema")
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +127,13 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         name="Preserve EMD hierarchy (empties)",
         default=False,
     )
+    preserve_bone_axes: BoolProperty(  # type: ignore
+        name="Preserve Bone Axes",
+        description=(
+            "Build armature bones from source local axes. Helps mirrored chains keep matching"
+        ),
+        default=False,
+    )
     dyt_entry_index: IntProperty(  # type: ignore
         name="DYT Entry Index",
         description="DYT texture entry to use (e.g. 2 -> DATA002)",
@@ -139,6 +156,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
         layout.prop(self, "dyt_entry_index")
         layout.prop(self, "tris_to_quads")
         layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "preserve_bone_axes")
         layout.prop(self, "reuse_materials")
         if self.auto_merge_by_distance:
             layout.prop(self, "merge_distance")
@@ -192,6 +210,7 @@ class IMPORT_OT_emd(Operator, ImportHelper):
                 shared_armature=shared,
                 return_armature=True,
                 preserve_structure=self.preserve_structure,
+                preserve_bone_axes=self.preserve_bone_axes,
                 dyt_entry_index=self.dyt_entry_index,
                 reuse_materials=self.reuse_materials,
                 warn=lambda msg: self.report({"WARNING"}, msg),
@@ -256,6 +275,13 @@ class IMPORT_OT_nsk(Operator, ImportHelper):
         description="Reuse existing materials by name when the shader template matches",
         default=True,
     )
+    preserve_bone_axes: BoolProperty(  # type: ignore
+        name="Preserve Bone Axes",
+        description=(
+            "Build armature bones from source local axes. Helps mirrored chains keep matching"
+        ),
+        default=False,
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -263,6 +289,7 @@ class IMPORT_OT_nsk(Operator, ImportHelper):
         layout.prop(self, "import_tangents")
         layout.prop(self, "tris_to_quads")
         layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "preserve_bone_axes")
         layout.prop(self, "reuse_materials")
         if self.auto_merge_by_distance:
             layout.prop(self, "merge_distance")
@@ -289,6 +316,103 @@ class IMPORT_OT_nsk(Operator, ImportHelper):
                 self.tris_to_quads,
                 self.split_into_submeshes,
                 return_armature=False,
+                reuse_materials=self.reuse_materials,
+                preserve_bone_axes=self.preserve_bone_axes,
+                warn=lambda msg: self.report({"WARNING"}, msg),
+            )
+
+        return {"FINISHED"}
+
+
+# ---------------------------------------------------------------------------
+# EMO Import (.EMO container)
+# ---------------------------------------------------------------------------
+class IMPORT_OT_emo(Operator, ImportHelper):
+    bl_idname = "import_scene.xv2_emo"
+    bl_label = "Import EMO (Xenoverse 2)"
+
+    files: bpy.props.CollectionProperty(type=bpy.types.OperatorFileListElement)  # type: ignore
+    directory: StringProperty(subtype="DIR_PATH")  # type: ignore
+
+    filename_ext = ".emo"
+    filter_glob: StringProperty(default="*.emo", options={"HIDDEN"})  # type: ignore
+
+    import_custom_normals: BoolProperty(  # type: ignore
+        name="Import custom split normals",
+        description=("Use normals stored in embedded EMG meshes."),
+        default=True,
+    )
+    import_tangents: BoolProperty(  # type: ignore
+        name="Import tangents (if present)",
+        default=False,
+    )
+    tris_to_quads: BoolProperty(  # type: ignore
+        name="Convert tris to quads",
+        default=False,
+    )
+    auto_merge_by_distance: BoolProperty(  # type: ignore
+        name="Auto Merge by Distance",
+        description="Merge nearby vertices after import",
+        default=True,
+    )
+    merge_distance: FloatProperty(  # type: ignore
+        name="Merge Distance",
+        description="Distance threshold used by Auto Merge by Distance",
+        default=0.0001,
+        min=0.0,
+        soft_max=0.01,
+        precision=4,
+        subtype="DISTANCE",
+        unit="LENGTH",
+    )
+    split_into_submeshes: BoolProperty(  # type: ignore
+        name="Split into submeshes",
+        default=True,
+    )
+    preserve_structure: BoolProperty(  # type: ignore
+        name="Preserve EMO hierarchy (empties)",
+        default=True,
+    )
+    reuse_materials: BoolProperty(  # type: ignore
+        name="Reuse Materials",
+        description="Reuse existing materials by name when the shader template matches",
+        default=True,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "import_custom_normals")
+        layout.prop(self, "import_tangents")
+        layout.prop(self, "tris_to_quads")
+        layout.prop(self, "auto_merge_by_distance")
+        layout.prop(self, "preserve_structure")
+        layout.prop(self, "reuse_materials")
+        if self.auto_merge_by_distance:
+            layout.prop(self, "merge_distance")
+
+    def execute(self, context):
+        paths: list[str] = []
+        if self.files:
+            for file_entry in self.files:
+                paths.append(os.path.join(self.directory, file_entry.name))
+        else:
+            paths.append(self.filepath)
+
+        if not paths:
+            self.report({"ERROR"}, "Select one or more .emo files to import.")
+            return {"CANCELLED"}
+
+        for path in paths:
+            import_emo(
+                path,
+                self.import_custom_normals,
+                self.import_tangents,
+                self.auto_merge_by_distance,
+                self.merge_distance,
+                self.tris_to_quads,
+                self.split_into_submeshes,
+                return_armature=False,
+                preserve_structure=self.preserve_structure,
                 reuse_materials=self.reuse_materials,
                 warn=lambda msg: self.report({"WARNING"}, msg),
             )
@@ -364,6 +488,13 @@ class IMPORT_OT_map(Operator, ImportHelper):
         ),
         default=False,
     )
+    preserve_bone_axes: BoolProperty(  # type: ignore
+        name="Preserve Bone Axes",
+        description=(
+            "Build armature bones from source local axes. Helps mirrored chains keep matching"
+        ),
+        default=False,
+    )
     _timer = None
     _paths: list[str]
     _next_path_index: int
@@ -384,6 +515,7 @@ class IMPORT_OT_map(Operator, ImportHelper):
         layout.prop(self, "import_colliders")
         if self.import_colliders:
             layout.prop(self, "import_collision_meshes")
+        layout.prop(self, "preserve_bone_axes")
         layout.prop(self, "use_collection_instances")
 
     def _cleanup_modal(self, context):
@@ -415,6 +547,7 @@ class IMPORT_OT_map(Operator, ImportHelper):
             import_collision_meshes=self.import_collision_meshes,
             use_collection_instances=self.use_collection_instances,
             reuse_materials=self.reuse_materials,
+            preserve_bone_axes=self.preserve_bone_axes,
             warn=lambda msg: self.report({"WARNING"}, msg),
         )
         print(f"[XV2 MAP] Importing {os.path.basename(self._active_path)}...")
@@ -500,9 +633,20 @@ class IMPORT_OT_esk(Operator, ImportHelper):
 
     filename_ext = ".esk"
     filter_glob: StringProperty(default="*.esk", options={"HIDDEN"})  # type: ignore
+    preserve_bone_axes: BoolProperty(  # type: ignore
+        name="Preserve Bone Axes",
+        description=(
+            "Build armature bones from source local axes. Helps mirrored chains keep matching"
+        ),
+        default=False,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "preserve_bone_axes")
 
     def execute(self, context):
-        arm = import_esk(self.filepath)
+        arm = import_esk(self.filepath, preserve_bone_axes=self.preserve_bone_axes)
         if arm:
             self.report({"INFO"}, f"Imported ESK armature {arm.name}")
             return {"FINISHED"}
@@ -562,6 +706,26 @@ class EXPORT_OT_emd(Operator, ExportHelper):
 
         self.report({"INFO"}, f"Exported {len(written)} EMD file(s).")
         return {"FINISHED"}
+
+
+class EXPORT_OT_emo(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_emo"
+    bl_label = "Export EMO (Xenoverse 2)"
+
+    filename_ext = ".emo"
+    filter_glob: StringProperty(default="*.emo", options={"HIDDEN"})  # type: ignore
+
+    def execute(self, context):
+        arm = context.object if context.object and context.object.type == "ARMATURE" else None
+        if arm is None:
+            self.report({"ERROR"}, "Select an armature to export.")
+            return {"CANCELLED"}
+        ok, error = export_emo(self.filepath, arm)
+        if ok:
+            self.report({"INFO"}, "Exported EMO")
+            return {"FINISHED"}
+        self.report({"ERROR"}, error or "Failed to export EMO.")
+        return {"CANCELLED"}
 
 
 class EXPORT_OT_nsk(Operator, ExportHelper):
@@ -665,6 +829,17 @@ class XV2_MT_import_assets(Menu):
         )
         layout.separator()
         layout.operator(
+            IMPORT_OT_emo.bl_idname,
+            text="Dragon Ball XV2 EMO (.emo)",
+            icon_value=_entry_icon_ids["emo"],
+        )
+        layout.operator(
+            IMPORT_OT_ema.bl_idname,
+            text="Dragon Ball XV2 EMA (.ema)",
+            icon_value=_entry_icon_ids["ema"],
+        )
+        layout.separator()
+        layout.operator(
             IMPORT_OT_nsk.bl_idname,
             text="Dragon Ball XV2 NSK (.nsk)",
             icon_value=_entry_icon_ids["nsk"],
@@ -701,6 +876,17 @@ class XV2_MT_export_assets(Menu):
             EXPORT_OT_cam_ean.bl_idname,
             text="Dragon Ball XV2 Camera EAN (.cam.ean)",
             icon_value=_entry_icon_ids["cam"],
+        )
+        layout.separator()
+        layout.operator(
+            EXPORT_OT_emo.bl_idname,
+            text="Dragon Ball XV2 EMO (.emo)",
+            icon_value=_entry_icon_ids["emo"],
+        )
+        layout.operator(
+            EXPORT_OT_ema.bl_idname,
+            text="Dragon Ball XV2 EMA (.ema)",
+            icon_value=_entry_icon_ids["ema"],
         )
         layout.separator()
         layout.operator(
@@ -742,6 +928,16 @@ class IMPORT_OT_ean(Operator, ImportHelper):
         description="Ignore the selected armature and build one from the EAN skeleton",
         default=False,
     )
+    preserve_bone_axes: BoolProperty(  # type: ignore
+        name="Preserve Bone Axes",
+        description=("When creating/replacing an armature, build bones from source local axes"),
+        default=False,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "replace_armature")
+        layout.prop(self, "preserve_bone_axes")
 
     def execute(self, context):
         target = context.object if context.object and context.object.type == "ARMATURE" else None
@@ -749,9 +945,49 @@ class IMPORT_OT_ean(Operator, ImportHelper):
             self.filepath,
             target_armature=target,
             replace_armature=self.replace_armature,
+            preserve_bone_axes=self.preserve_bone_axes,
         )
         if arm:
             self.report({"INFO"}, f"Imported EAN onto armature {arm.name}")
+            return {"FINISHED"}
+        self.report({"WARNING"}, "Nothing imported.")
+        return {"CANCELLED"}
+
+
+class IMPORT_OT_ema(Operator, ImportHelper):
+    bl_idname = "import_scene.xv2_ema"
+    bl_label = "Import EMA (Xenoverse 2)"
+
+    filename_ext = ".obj.ema"
+    filter_glob: StringProperty(default="*.obj.ema", options={"HIDDEN"})  # type: ignore
+    replace_armature: BoolProperty(  # type: ignore
+        name="Replace selected armature",
+        description="Ignore the selected armature and build one from the EMA skeleton",
+        default=False,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "replace_armature")
+
+    def execute(self, context):
+        if not _is_obj_ema_path(self.filepath):
+            self.report({"ERROR"}, "Only .obj.ema files are supported.")
+            return {"CANCELLED"}
+        target = context.object if context.object and context.object.type == "ARMATURE" else None
+        try:
+            arm = import_ema_animations(
+                self.filepath,
+                target_armature=target,
+                replace_armature=self.replace_armature,
+                preserve_bone_axes=True,
+            )
+        except (RuntimeError, OSError, ValueError, TypeError) as error:
+            self.report({"ERROR"}, f"Failed to import EMA: {error}")
+            return {"CANCELLED"}
+
+        if arm:
+            self.report({"INFO"}, f"Imported EMA onto armature {arm.name}")
             return {"FINISHED"}
         self.report({"WARNING"}, "Nothing imported.")
         return {"CANCELLED"}
@@ -819,6 +1055,34 @@ class EXPORT_OT_ean(Operator, ExportHelper):
         return {"CANCELLED"}
 
 
+class EXPORT_OT_ema(Operator, ExportHelper):
+    bl_idname = "export_scene.xv2_ema"
+    bl_label = "Export EMA (Xenoverse 2)"
+
+    filename_ext = ".obj.ema"
+    filter_glob: StringProperty(default="*.obj.ema", options={"HIDDEN"})  # type: ignore
+    add_dummy_rest_keys: BoolProperty(  # type: ignore
+        name="Add Dummy Keyframes",
+        description="Add a rest pose keyframe at frame 0 for bones with no keyframes",
+        default=False,
+    )
+
+    def execute(self, context):
+        if not _is_obj_ema_path(self.filepath):
+            self.report({"ERROR"}, "EMA export only writes .obj.ema files.")
+            return {"CANCELLED"}
+        arm = context.object if context.object and context.object.type == "ARMATURE" else None
+        if arm is None:
+            self.report({"ERROR"}, "Select an armature to export.")
+            return {"CANCELLED"}
+        ok, error = export_ema(self.filepath, arm, add_dummy_rest=self.add_dummy_rest_keys)
+        if ok:
+            self.report({"INFO"}, "Exported EMA")
+            return {"FINISHED"}
+        self.report({"ERROR"}, error or "Failed to export EMA.")
+        return {"CANCELLED"}
+
+
 classes = [
     EMDTextureSamplerPropertyGroup,
     EMD_UL_texture_samplers,
@@ -833,16 +1097,20 @@ classes = [
     VIEW3D_PT_scd_link,
     XV2_OT_scd_link_to_armature,
     IMPORT_OT_emd,
+    IMPORT_OT_emo,
     IMPORT_OT_nsk,
     IMPORT_OT_map,
     IMPORT_OT_esk,
     IMPORT_OT_cam_ean,
     IMPORT_OT_ean,
+    IMPORT_OT_ema,
     EXPORT_OT_emd,
+    EXPORT_OT_emo,
     EXPORT_OT_nsk,
     EXPORT_OT_map,
     EXPORT_OT_esk,
     EXPORT_OT_ean,
+    EXPORT_OT_ema,
     EXPORT_OT_cam_ean,
     CameraEANProperties,
     DATA_PT_xv2_camera_actions,

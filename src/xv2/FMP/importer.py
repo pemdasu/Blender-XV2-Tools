@@ -205,6 +205,7 @@ def import_map_in_steps(
     import_collision_meshes: bool = True,
     use_collection_instances: bool = True,
     reuse_materials: bool = True,
+    preserve_bone_axes: bool = False,
 ) -> Iterator[tuple[int, int, str]]:
     fmp = parse_fmp(path)
     map_name = map_name_from_path(path) or "XV2_MAP"
@@ -539,6 +540,7 @@ def import_map_in_steps(
                         split_submeshes=split_submeshes,
                         return_armature=True,
                         reuse_materials=reuse_materials,
+                        preserve_bone_axes=preserve_bone_axes,
                         warn=warn,
                         emb_override=emb_override_str,
                         emm_override=emm_override_str,
@@ -624,6 +626,7 @@ def import_map(
     import_collision_meshes: bool = True,
     use_collection_instances: bool = True,
     reuse_materials: bool = True,
+    preserve_bone_axes: bool = False,
 ) -> bpy.types.Object | None:
     iterator = import_map_in_steps(
         path=path,
@@ -638,6 +641,7 @@ def import_map(
         import_collision_meshes=import_collision_meshes,
         use_collection_instances=use_collection_instances,
         reuse_materials=reuse_materials,
+        preserve_bone_axes=preserve_bone_axes,
     )
     while True:
         try:
