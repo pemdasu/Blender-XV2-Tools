@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import struct
 import tempfile
 from pathlib import Path
 
 import bpy
+import mathutils
 
 from ..EAN import ComponentType, read_ean
 from ..EAN.exporter import export_ean
@@ -38,6 +40,37 @@ def _component_parameter(component_type: ComponentType) -> int | None:
     if component_type == ComponentType.Scale:
         return 2
     return None
+
+
+def _build_rotation_axis_values(
+    keyframes,
+) -> tuple[list[tuple[int, float]], list[tuple[int, float]], list[tuple[int, float]]]:
+    x_values: list[tuple[int, float]] = []
+    y_values: list[tuple[int, float]] = []
+    z_values: list[tuple[int, float]] = []
+    previous_euler: mathutils.Euler | None = None
+
+    for keyframe in keyframes:
+        quaternion = mathutils.Quaternion(
+            (
+                float(keyframe.w),
+                float(keyframe.x),
+                float(keyframe.y),
+                float(keyframe.z),
+            )
+        )
+        quaternion.normalize()
+        if previous_euler is None:
+            euler = quaternion.to_euler("XYZ")
+        else:
+            euler = quaternion.to_euler("XYZ", previous_euler)
+        previous_euler = euler.copy()
+        frame_index = int(keyframe.frame_index)
+        x_values.append((frame_index, math.degrees(euler.x)))
+        y_values.append((frame_index, math.degrees(euler.y)))
+        z_values.append((frame_index, math.degrees(euler.z)))
+
+    return x_values, y_values, z_values
 
 
 def _build_ema_skeleton_bytes(skeleton: ESK_File) -> bytes:
@@ -105,12 +138,15 @@ def _build_ema_animation_bytes(animation, bone_index_by_name: dict[str, int]) ->
             keyframes = sorted(component.keyframes, key=lambda key: key.frame_index)
             if not keyframes:
                 continue
-            axis_values = (
-                [(int(key.frame_index), float(key.x)) for key in keyframes],
-                [(int(key.frame_index), float(key.y)) for key in keyframes],
-                [(int(key.frame_index), float(key.z)) for key in keyframes],
-                [(int(key.frame_index), float(key.w)) for key in keyframes],
-            )
+            if component.type == ComponentType.Rotation:
+                axis_values = _build_rotation_axis_values(keyframes)
+            else:
+                axis_values = (
+                    [(int(key.frame_index), float(key.x)) for key in keyframes],
+                    [(int(key.frame_index), float(key.y)) for key in keyframes],
+                    [(int(key.frame_index), float(key.z)) for key in keyframes],
+                    [(int(key.frame_index), float(key.w)) for key in keyframes],
+                )
             for axis, values in enumerate(axis_values):
                 commands.append((int(bone_index), int(parameter), axis, values))
                 end_frame = max(end_frame, max(frame for frame, _value in values))
