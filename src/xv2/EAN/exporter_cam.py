@@ -6,6 +6,7 @@ from pathlib import Path
 
 import bpy
 
+from ...utils.blender_compat import find_action_fcurve, iter_action_fcurves
 from .EAN import ComponentType
 
 
@@ -17,7 +18,7 @@ def _collect_frames_from_action(action: bpy.types.Action, data_paths: Sequence[s
     frames: set[int] = set()
     if action is None:
         return frames
-    for fcurve in action.fcurves:
+    for fcurve in iter_action_fcurves(action):
         if fcurve.data_path in data_paths:
             frames.update(int(round(point.co.x)) for point in fcurve.keyframe_points)
     return frames
@@ -28,7 +29,7 @@ def _eval_scalar(
 ) -> float:
     if action is None:
         return default
-    fcurve = action.fcurves.find(data_path)
+    fcurve = find_action_fcurve(action, data_path)
     return fcurve.evaluate(frame) if fcurve else default
 
 

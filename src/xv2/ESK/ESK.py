@@ -6,11 +6,12 @@ import mathutils
 
 from ...utils import read_cstring
 from ...utils.binary import i16, u16, u32, u64
-
-ESK_SIGNATURE = 1263748387
-SOURCE_LOCAL_MATRIX_PROP = "xv2SourceLocalMatrix"
-SOURCE_ROOT_MATRIX_PROP = "xv2SourceRootMatrix"
-SOURCE_ROOT_NAME_PROP = "xv2SourceRootName"
+from ..consts import (
+    ESK_SIGNATURE,
+    SOURCE_LOCAL_MATRIX_PROP,
+    SOURCE_ROOT_MATRIX_PROP,
+    SOURCE_ROOT_NAME_PROP,
+)
 
 
 class ESK_Bone:

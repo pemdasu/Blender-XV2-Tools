@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 
 from ...utils import float_to_half, read_cstring
 from ...utils.binary import i16, u16, u32, u64
+from ..consts import EMG_SIGNATURE, EMO_SIGNATURE
 from ..EMA.skeleton import parse_ema_skeleton_as_esk
 from ..EMD import (
     VERTEX_BLENDWEIGHT,
@@ -27,9 +28,6 @@ from ..EMD import (
     read_vertices,
 )
 from ..ESK import ESK_File
-
-EMO_SIGNATURE = 1330464035  # "#EMO"
-EMG_SIGNATURE = 1196246307  # "#EMG"
 
 
 def _pad_data(data: bytearray, alignment: int) -> None:

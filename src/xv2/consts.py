@@ -1,0 +1,89 @@
+import re
+
+import mathutils
+
+BONE_SCALE_PROP = "xv2_bone_scale"
+BONE_SCALE_IDENTITY = mathutils.Vector((1.0, 1.0, 1.0))
+BONE_SCALE_EPSILON = 1e-6
+SCD_LINK_TARGET_ARMATURE_PROP = "xv2_scd_target_armature"
+SCD_LINK_TARGET_BONE_PROP = "xv2_scd_target_bone"
+SCD_LINK_CONSTRAINT_NAME = "SCD_Link"
+
+DDSD_LINEARSIZE = 0x80000
+DDSD_CAPS = 0x1
+DDSD_HEIGHT = 0x2
+DDSD_WIDTH = 0x4
+DDSD_PIXELFORMAT = 0x1000
+
+EMA_SIGNATURE = 1095583011
+EMA_TYPE_OBJ = 3
+EMA_ANIM_TYPE_OBJ = 0
+EMA_FLOAT32 = 2
+INTERP_LINEAR = 0x00
+INTERP_QUADRATIC = 0x40
+INTERP_CUBIC = 0x80
+PARAM_POSITION = 0
+PARAM_ROTATION = 1
+PARAM_SCALE = 2
+EMA_DEFAULT_POSITION = (0.0, 0.0, 0.0, 1.0)
+EMA_DEFAULT_ROTATION_EULER = (0.0, 0.0, 0.0, 1.0)
+EMA_DEFAULT_SCALE = (1.0, 1.0, 1.0, 1.0)
+
+EMB_SIGNATURE = 1112360227
+EMD_SIGNATURE = 1145914659
+EMG_SIGNATURE = 1196246307
+EMM_SIGNATURE = 1296909603
+EMO_SIGNATURE = 1330464035
+ESK_SIGNATURE = 1263748387
+FMP_SIGNATURE = 1347241507
+
+SOURCE_LOCAL_MATRIX_PROP = "xv2SourceLocalMatrix"
+SOURCE_ROOT_MATRIX_PROP = "xv2SourceRootMatrix"
+SOURCE_ROOT_NAME_PROP = "xv2SourceRootName"
+
+VERTEX_POSITION = 0x1
+VERTEX_NORMAL = 0x2
+VERTEX_TEXUV = 0x4
+VERTEX_TEX2UV = 0x8
+VERTEX_COLOR = 0x40
+VERTEX_TANGENT = 0x80
+VERTEX_BLENDWEIGHT = 0x200
+VERTEX_COMPRESSED = 0x8000
+
+ADDRESS_MODE_LABELS = {
+    0: "Wrap",
+    1: "Mirror",
+    2: "Clamp",
+}
+
+FILTERING_LABELS = {
+    0: "None",
+    1: "Point",
+    2: "Linear",
+}
+
+MAX_BONES_PER_TRIANGLE_GROUP = 24
+AUTO_SMOOTH_ANGLE_DEGREES = 30.0
+
+ESK_MAGIC = b"#ESK"
+EMD_MAGIC = b"#EMD"
+NSK_EMD_OFFSET_ADDRESS = 20
+
+FMP_OBJECT_NAME_RE = re.compile(r"^(?P<base>.+)_object(?:_(?P<instance>\d{3}))?(?:\.\d{3})?$")
+FMP_ENTITY_NAME_RE = re.compile(
+    r"^(?P<prefix>.+)_(?P<entity>.+)_entity(?:_(?P<entity_idx>\d{2}))"
+    r"(?:_(?P<instance_idx>\d{3}))?(?:\.\d{3})?$"
+)
+BLENDER_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.\d{3}$")
+
+AXIS_XV2_TO_BLENDER = mathutils.Matrix(
+    (
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 0.0, -1.0, 0.0),
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+    )
+)
+AXIS_BLENDER_TO_XV2 = AXIS_XV2_TO_BLENDER.inverted()
+AXIS3_XV2_TO_BLENDER = AXIS_XV2_TO_BLENDER.to_3x3()
+AXIS3_BLENDER_TO_XV2 = AXIS_BLENDER_TO_XV2.to_3x3()

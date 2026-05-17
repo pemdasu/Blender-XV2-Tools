@@ -11,8 +11,7 @@ import mathutils
 
 from ...utils import read_cstring
 from ...utils.binary import f32, i32, is_valid_offset, u16
-
-FMP_SIGNATURE = 1347241507
+from ..consts import AXIS_BLENDER_TO_XV2, AXIS_XV2_TO_BLENDER, FMP_SIGNATURE
 
 
 @dataclass(slots=True)
@@ -193,17 +192,6 @@ class FMPFile:
     i_96: tuple[int, int, int, int] = (0, 0, 0, 0)
     objects: list[FMPObject] = field(default_factory=list)
     collision_groups: list[FMPCollisionGroup] = field(default_factory=list)
-
-
-AXIS_XV2_TO_BLENDER = mathutils.Matrix(
-    (
-        (1.0, 0.0, 0.0, 0.0),
-        (0.0, 0.0, -1.0, 0.0),
-        (0.0, 1.0, 0.0, 0.0),
-        (0.0, 0.0, 0.0, 1.0),
-    )
-)
-AXIS_BLENDER_TO_XV2 = AXIS_XV2_TO_BLENDER.inverted()
 
 
 def map_name_from_path(path: str) -> str:

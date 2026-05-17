@@ -9,16 +9,25 @@ import bpy
 
 from ...utils import read_cstring
 from ...utils.binary import u16, u32
-
-DDSD_LINEARSIZE = 0x80000
-DDSD_CAPS = 0x1
-DDSD_HEIGHT = 0x2
-DDSD_WIDTH = 0x4
-DDSD_PIXELFORMAT = 0x1000
+from ...utils.blender_warnings import warn_on_error
+from ..consts import (
+    DDSD_CAPS,
+    DDSD_HEIGHT,
+    DDSD_LINEARSIZE,
+    DDSD_PIXELFORMAT,
+    DDSD_WIDTH,
+    EMB_SIGNATURE,
+)
 
 
 def _set_colorspace(image: bpy.types.Image, name: str) -> None:
-    with contextlib.suppress(AttributeError, RuntimeError, ValueError, TypeError):
+    with warn_on_error(
+        f"Could not set image colorspace to {name}",
+        AttributeError,
+        RuntimeError,
+        ValueError,
+        TypeError,
+    ):
         cs = image.colorspace_settings
         is_data = name in ("Non-Color", "Raw")
         cs.is_data = is_data
@@ -41,7 +50,12 @@ def _force_image_colorspace(image: bpy.types.Image, name: str) -> bpy.types.Imag
     except (AttributeError, RuntimeError):
         pass
     # As a last resort, duplicate the image datablock and apply the colorspace on the copy.
-    with contextlib.suppress(AttributeError, RuntimeError, ValueError):
+    with warn_on_error(
+        f"Could not copy image before setting colorspace to {name}",
+        AttributeError,
+        RuntimeError,
+        ValueError,
+    ):
         dup = image.copy()
         dup.name = f"{image.name}_cs"
         _set_colorspace(dup, name)
@@ -65,9 +79,6 @@ class EMBFile:
         self.i_08: int | None = None
         self.i_10: int | None = None
         self.use_file_names: bool | None = None
-
-
-EMB_SIGNATURE = 1112360227
 
 
 def _normalize_source_path(path: str) -> str:

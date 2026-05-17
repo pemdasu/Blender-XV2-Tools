@@ -2,6 +2,8 @@ import bpy
 from bpy.props import EnumProperty, FloatProperty, StringProperty
 from mathutils import Matrix
 
+from ..utils.blender_compat import ensure_action_fcurve, find_action_fcurve
+
 
 def _find_camera_object(context):
     if context.object and context.object.type == "CAMERA":
@@ -56,7 +58,7 @@ def _apply_selected_animation(self, context):
         cam_obj.data.animation_data.action = data_action
         frame = context.scene.frame_current
         for name in ("xv2_fov", "xv2_roll"):
-            fc = data_action.fcurves.find(name)
+            fc = find_action_fcurve(data_action, name)
             if fc is None:
                 continue
             value = fc.evaluate(frame)
@@ -246,9 +248,7 @@ class XV2_OT_cam_create_actions(bpy.types.Operator):
             if not hasattr(cam_obj.data, prop_name):
                 continue
             value = getattr(cam_obj.data, prop_name)
-            fc = data_action.fcurves.find(prop_name)
-            if fc is None:
-                fc = data_action.fcurves.new(prop_name)
+            fc = ensure_action_fcurve(data_action, cam_obj.data, prop_name)
             fc.keyframe_points.insert(frame, value, options={"REPLACE"})
 
         # Update selection

@@ -4,8 +4,7 @@ import os
 from dataclasses import dataclass
 
 from ...utils.binary import f32, i16, i32, u32
-
-EMM_SIGNATURE = 1296909603
+from ..consts import EMM_SIGNATURE
 
 
 @dataclass

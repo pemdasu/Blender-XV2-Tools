@@ -2,6 +2,19 @@ import struct
 
 from ...utils import half_to_float, read_cstring
 from ...utils.binary import f32, u16, u32
+from ..consts import (
+    ADDRESS_MODE_LABELS,
+    EMD_SIGNATURE,
+    FILTERING_LABELS,
+    VERTEX_BLENDWEIGHT,
+    VERTEX_COLOR,
+    VERTEX_COMPRESSED,
+    VERTEX_NORMAL,
+    VERTEX_POSITION,
+    VERTEX_TANGENT,
+    VERTEX_TEX2UV,
+    VERTEX_TEXUV,
+)
 
 
 class EMD_Vertex:
@@ -67,30 +80,6 @@ class EMD_File:
     def __init__(self):
         self.version = 0
         self.models: list[EMD_Model] = []
-
-
-VERTEX_POSITION = 0x1
-VERTEX_NORMAL = 0x2
-VERTEX_TEXUV = 0x4
-VERTEX_TEX2UV = 0x8
-VERTEX_COLOR = 0x40
-VERTEX_TANGENT = 0x80
-VERTEX_BLENDWEIGHT = 0x200
-VERTEX_COMPRESSED = 0x8000
-
-ADDRESS_MODE_LABELS = {
-    0: "Wrap",
-    1: "Mirror",
-    2: "Clamp",
-}
-
-FILTERING_LABELS = {
-    0: "None",
-    1: "Point",
-    2: "Linear",
-}
-
-EMD_SIGNATURE = 1145914659
 
 
 def get_vertex_size_from_flags(flags: int) -> int:

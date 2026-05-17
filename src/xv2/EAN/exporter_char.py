@@ -7,6 +7,14 @@ import bpy
 import mathutils
 
 from ...utils import read_cstring
+from ...utils.blender_compat import iter_action_fcurves
+from ..bone_scale import (
+    bake_parent_scale_into_matrix,
+    get_armature_bone_scales,
+    get_inherited_parent_scale,
+    identity_bone_scale_pose,
+    scale_vector,
+)
 from ..ESK.ESK import (
     ESK_Bone,
     ESK_File,
@@ -139,7 +147,7 @@ def _collect_actions(bone_names: set[str]) -> list[bpy.types.Action]:
     for act in bpy.data.actions:
         if act.name in seen:
             continue
-        for fc in act.fcurves:
+        for fc in iter_action_fcurves(act):
             if not fc.data_path.startswith('pose.bones["'):
                 continue
             name = fc.data_path.split('"')[1]
@@ -313,6 +321,8 @@ def _pack_half(val: float) -> bytes:
 def _patch_skeleton_rest_transforms(
     skeleton_bytes: bytes,
     rest_locals: dict[str, mathutils.Matrix],
+    bones: list[ESK_Bone],
+    bone_scales: dict[str, mathutils.Vector],
 ) -> bytes:
     try:
         data = bytearray(skeleton_bytes)
@@ -331,6 +341,8 @@ def _patch_skeleton_rest_transforms(
         if skin_rel + bone_count * 48 > len(data):
             return skeleton_bytes
 
+        bone_indices = {bone.name: bone_index for bone_index, bone in enumerate(bones)}
+        parent_scale_cache: dict[int, mathutils.Vector] = {}
         for bone_index in range(bone_count):
             name_off_rel = struct.unpack_from("<I", data, name_rel + 4 * bone_index)[0]
             if not (0 <= name_off_rel < len(data)):
@@ -339,6 +351,16 @@ def _patch_skeleton_rest_transforms(
             local_mat = rest_locals.get(bone_name)
             if local_mat is None:
                 continue
+
+            esk_bone_index = bone_indices.get(bone_name)
+            if esk_bone_index is not None:
+                parent_scale = get_inherited_parent_scale(
+                    bones,
+                    esk_bone_index,
+                    bone_scales,
+                    parent_scale_cache,
+                )
+                local_mat = bake_parent_scale_into_matrix(local_mat, parent_scale)
 
             loc, rot, scale = local_mat.decompose()
             t_off = skin_rel + 48 * bone_index
@@ -359,17 +381,21 @@ def _build_animation_bytes(
     depsgraph: bpy.types.Depsgraph,
     add_dummy_rest: bool = False,
     float_size: int = 1,
+    bone_scales: dict[str, mathutils.Vector] | None = None,
 ) -> bytes:
     scene = bpy.context.scene
     original_frame = scene.frame_current
     original_action = arm_obj.animation_data.action if arm_obj.animation_data else None
+    bone_scales = bone_scales or {}
+    bone_indices = {bone.name: bone_index for bone_index, bone in enumerate(esk.bones)}
+    parent_scale_cache: dict[int, mathutils.Vector] = {}
 
     frames_by_bone: dict[str, dict[str, set[int]]] = defaultdict(
         lambda: {"pos": set(), "rot": set(), "scl": set()}
     )
     global_frames: set[int] = set()
 
-    for fc in action.fcurves:
+    for fc in iter_action_fcurves(action):
         if not fc.data_path.startswith('pose.bones["'):
             continue
         bone_name = fc.data_path.split('"')[1]
@@ -445,12 +471,30 @@ def _build_animation_bytes(
             rest_local = rest_locals.get(bone_name, mathutils.Matrix.Identity(4))
             baked_local = rest_local @ delta
             loc, rot, scl = baked_local.decompose()
+            bone_index = bone_indices.get(bone_name)
+            if bone_index is not None:
+                parent_scale = get_inherited_parent_scale(
+                    esk.bones,
+                    bone_index,
+                    bone_scales,
+                    parent_scale_cache,
+                )
+                loc = scale_vector(loc, parent_scale)
             samples[bone_name][frame] = (loc, rot, scl)
 
     if dummy_bones:
         for bone_name in dummy_bones:
             rest_local = rest_locals.get(bone_name, mathutils.Matrix.Identity(4))
             loc, rot, scl = rest_local.decompose()
+            bone_index = bone_indices.get(bone_name)
+            if bone_index is not None:
+                parent_scale = get_inherited_parent_scale(
+                    esk.bones,
+                    bone_index,
+                    bone_scales,
+                    parent_scale_cache,
+                )
+                loc = scale_vector(loc, parent_scale)
             samples[bone_name][0] = (loc, rot, scl)
 
     nodes: list[
@@ -590,7 +634,10 @@ def _build_animation_bytes(
 
 
 def export_ean(
-    filepath: str, arm_obj: bpy.types.Object, add_dummy_rest: bool = False
+    filepath: str,
+    arm_obj: bpy.types.Object,
+    add_dummy_rest: bool = False,
+    use_bone_scale: bool = False,
 ) -> tuple[bool, str | None]:
     if arm_obj is None or arm_obj.type != "ARMATURE":
         return False, "Select an armature to export."
@@ -600,6 +647,7 @@ def export_ean(
 
     try:
         esk, skeleton_bytes, rest_locals = _build_skeleton_from_armature(arm_obj)
+        bone_scales = get_armature_bone_scales(arm_obj) if use_bone_scale else {}
         header_version = _to_int(arm_obj.get("ean_i08", 37505), 37505)
         header_i17 = _to_int(arm_obj.get("ean_i17", 4), 4)
         preferred_float_size = 1
@@ -616,10 +664,15 @@ def export_ean(
                 merged_rest_locals = dict(source_rest_locals)
                 merged_rest_locals.update(rest_locals)
                 rest_locals = merged_rest_locals
-            skeleton_bytes = _patch_skeleton_rest_transforms(skeleton_bytes, rest_locals)
             header_version = int(source_template.get("version", header_version))
             header_i17 = int(source_template.get("i17", header_i17))
             preferred_float_size = int(source_template.get("float_size", preferred_float_size))
+        skeleton_bytes = _patch_skeleton_rest_transforms(
+            skeleton_bytes,
+            rest_locals,
+            esk.bones,
+            bone_scales,
+        )
         actual_bone_names = {b.name for b in esk.bones if b.index != 0}
 
         collected_actions = _collect_actions(actual_bone_names)
@@ -651,15 +704,17 @@ def export_ean(
             if hasattr(bpy.context.view_layer, "update"):
                 bpy.context.view_layer.update()
 
-            anim_bytes = _build_animation_bytes(
-                act,
-                arm_obj,
-                esk,
-                rest_locals,
-                bpy.context.view_layer.depsgraph,
-                add_dummy_rest=add_dummy_rest,
-                float_size=preferred_float_size,
-            )
+            with identity_bone_scale_pose(arm_obj, bone_scales):
+                anim_bytes = _build_animation_bytes(
+                    act,
+                    arm_obj,
+                    esk,
+                    rest_locals,
+                    bpy.context.view_layer.depsgraph,
+                    add_dummy_rest=add_dummy_rest,
+                    float_size=preferred_float_size,
+                    bone_scales=bone_scales,
+                )
             if not anim_bytes:
                 continue
             animations_by_index[anim_index] = (anim_bytes, anim_label)

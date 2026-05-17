@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import math
-import re
 import struct
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import bpy
 import mathutils
 
 from ...utils import remove_unused_vertex_groups
+from ..consts import BLENDER_DUPLICATE_SUFFIX_RE
 from ..EAN.exporter_char import _build_skeleton_from_armature
 from ..EMD import EMD_File, EMD_Mesh, EMD_Model
 from ..EMD.exporter import _build_emd_bytes, _build_submeshes_from_object
@@ -20,11 +20,9 @@ from ..ESK.exporter import (
 )
 from .NSK import NSK_EMD_OFFSET_ADDRESS
 
-_BLENDER_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.\d{3}$")
-
 
 def _strip_blender_duplicate_suffix(name: str) -> str:
-    match = _BLENDER_DUPLICATE_SUFFIX_RE.match(name)
+    match = BLENDER_DUPLICATE_SUFFIX_RE.match(name)
     if match is None:
         return name
     return str(match.group("base"))

@@ -10,6 +10,12 @@ import mathutils
 
 from ...ui import sampler_defs_to_collection
 from ...utils import remove_unused_vertex_groups
+from ...utils.blender_compat import (
+    clear_custom_split_normals,
+    merge_selected_by_distance,
+    set_custom_split_normals,
+)
+from ..consts import AUTO_SMOOTH_ANGLE_DEGREES
 from ..EMB import (
     _extract_dyt_lines,
     emb_stem_from_path,
@@ -38,8 +44,6 @@ from ..NSK.importer import (
     submesh_has_blend_weights as _submesh_has_blend_weights,
 )
 from .EMD import EMD_File, EMD_Submesh, parse_emd, set_sampler_custom_properties
-
-AUTO_SMOOTH_ANGLE_DEGREES = 30.0
 
 
 def bind_weights(
@@ -898,15 +902,7 @@ def import_emd(
                     loop_normals = [
                         built_normals[loop.vertex_index].normalized() for loop in me.loops
                     ]
-                    with contextlib.suppress(RuntimeError):
-                        me.create_normals_split()
-                    try:
-                        me.normals_split_custom_set(loop_normals)
-                    except RuntimeError:
-                        with contextlib.suppress(RuntimeError):
-                            me.free_normals_split()
-                    with contextlib.suppress(RuntimeError):
-                        me.validate(clean_customdata=False)
+                    set_custom_split_normals(me, loop_normals)
 
                 for poly in me.polygons:
                     poly.use_smooth = True
@@ -968,8 +964,7 @@ def import_emd(
                     # When not importing custom normals, let Blender manage split normals.
                     # If custom normals were imported, keep them intact.
                     if not import_normals:
-                        with contextlib.suppress(RuntimeError):
-                            me.free_normals_split()
+                        clear_custom_split_normals(me)
 
                     if import_tangents:
                         with contextlib.suppress(RuntimeError):
@@ -978,8 +973,8 @@ def import_emd(
                     if merge_by_distance:
                         bpy.ops.object.mode_set(mode="EDIT")
                         bpy.ops.mesh.select_all(action="SELECT")
-                        bpy.ops.mesh.remove_doubles(
-                            threshold=merge_distance,
+                        merge_selected_by_distance(
+                            merge_distance,
                             use_sharp_edge_from_normals=True,
                         )
                         bpy.ops.object.mode_set(mode="OBJECT")
@@ -1082,8 +1077,8 @@ def import_emd(
         if merge_by_distance:
             bpy.ops.object.mode_set(mode="EDIT")
             bpy.ops.mesh.select_all(action="SELECT")
-            bpy.ops.mesh.remove_doubles(
-                threshold=merge_distance,
+            merge_selected_by_distance(
+                merge_distance,
                 use_sharp_edge_from_normals=True,
             )
             bpy.ops.object.mode_set(mode="OBJECT")

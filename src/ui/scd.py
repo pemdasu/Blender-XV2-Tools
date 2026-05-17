@@ -1,53 +1,66 @@
 import bpy
-from bpy.props import EnumProperty, PointerProperty, StringProperty
+from bpy.props import PointerProperty, StringProperty
+
+from ..xv2.consts import (
+    SCD_LINK_CONSTRAINT_NAME,
+    SCD_LINK_TARGET_ARMATURE_PROP,
+    SCD_LINK_TARGET_BONE_PROP,
+)
 
 
 def _armature_poll(_self, obj):
     return obj and obj.type == "ARMATURE"
 
 
-def _target_bone_items(self, context):
-    arm = self.target_armature
-    if arm is None and context is not None:
-        obj = context.object
-        if obj and obj.type == "ARMATURE":
-            arm = obj
-    items = [("NONE", "None", "Skip fallback")]
-    if arm and arm.type == "ARMATURE" and arm.data:
-        for bone in arm.data.bones:
-            items.append((bone.name, bone.name, ""))
-    return items
+def _remove_scd_constraints(pose_bone: bpy.types.PoseBone) -> None:
+    for constraint in list(pose_bone.constraints):
+        if constraint.name == SCD_LINK_CONSTRAINT_NAME or constraint.name.startswith(
+            f"{SCD_LINK_CONSTRAINT_NAME}_"
+        ):
+            pose_bone.constraints.remove(constraint)
 
 
-def link_scd_armatures(source: bpy.types.Object, target: bpy.types.Object) -> tuple[int, int]:
-    if source is None or target is None:
+def link_scd_armatures(
+    source: bpy.types.Object,
+    target: bpy.types.Object,
+) -> tuple[int, int]:
+    if source is None or target is None or source.data is None or target.data is None:
         return 0, 0
 
     mapped: dict[str, str] = {}
-    for pbone in source.pose.bones:
-        name_lower = pbone.name.lower()
+    for bone in source.data.bones:
+        name_lower = bone.name.lower()
         if name_lower.startswith("scd_"):
             continue
-        if pbone.name in target.pose.bones:
-            mapped[pbone.name] = pbone.name
+        if bone.name in target.data.bones:
+            mapped[bone.name] = bone.name
+
+    source[SCD_LINK_TARGET_ARMATURE_PROP] = target.name
+    source_world = source.matrix_world.copy()
+    source.parent = target
+    source.matrix_parent_inverse = target.matrix_world.inverted()
+    source.matrix_world = source_world
 
     added = 0
     skipped = 0
-    for pbone in source.pose.bones:
-        dest_name = mapped.get(pbone.name, "")
+    for pose_bone in source.pose.bones:
+        _remove_scd_constraints(pose_bone)
+
+    for bone in source.data.bones:
+        dest_name = mapped.get(bone.name, "")
         if not dest_name:
+            if SCD_LINK_TARGET_BONE_PROP in bone:
+                del bone[SCD_LINK_TARGET_BONE_PROP]
             skipped += 1
             continue
 
-        existing = pbone.constraints.get("SCD_Link")
-        if existing and existing.type != "COPY_TRANSFORMS":
-            pbone.constraints.remove(existing)
-            existing = None
-
-        constraint = existing or pbone.constraints.new(type="COPY_TRANSFORMS")
-        constraint.name = "SCD_Link"
-        constraint.target = target
-        constraint.subtarget = dest_name
+        bone[SCD_LINK_TARGET_BONE_PROP] = dest_name
+        pose_bone = source.pose.bones.get(bone.name)
+        if pose_bone is not None:
+            constraint = pose_bone.constraints.new(type="COPY_TRANSFORMS")
+            constraint.name = SCD_LINK_CONSTRAINT_NAME
+            constraint.target = target
+            constraint.subtarget = dest_name
         added += 1
 
     return added, skipped
@@ -63,12 +76,6 @@ class SCDLinkSettings(bpy.types.PropertyGroup):
         name="Target Armature",
         type=bpy.types.Object,
         poll=_armature_poll,
-    )
-    target_bone: EnumProperty(  # type: ignore
-        name="Target Bone",
-        items=_target_bone_items,
-        description="Bone on the target armature used when no name match is found",
-        default=0,  # index into items; required when items is a callable
     )
     report: StringProperty(name="Status", default="")  # type: ignore
 
@@ -110,12 +117,11 @@ class VIEW3D_PT_scd_link(bpy.types.Panel):
 
         layout.prop(settings, "source_armature")
         layout.prop(settings, "target_armature")
-        # layout.prop(settings, "target_bone")
         layout.operator(XV2_OT_scd_link_to_armature.bl_idname, icon="CON_TRANSFORM")
 
         if settings.report:
             layout.label(text=settings.report)
-        layout.label(text="Skips bones starting with 'scd_'.")
+        layout.label(text="Adds SCD copy-transform links and parents the armature.")
 
 
 classes = [

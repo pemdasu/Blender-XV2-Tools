@@ -1,11 +1,21 @@
-import contextlib
 import os
 import struct
+from contextlib import ExitStack
 from pathlib import Path
 
 import bpy
+import mathutils
 
 from ...utils import float_to_half, remove_unused_vertex_groups
+from ...utils.blender_compat import calc_split_normals
+from ..bone_scale import (
+    applied_effective_bone_scale_pose,
+    get_effective_armature_bone_scales,
+    get_scd_link_scale,
+    get_scd_target_armature,
+    is_identity_scale,
+)
+from ..consts import MAX_BONES_PER_TRIANGLE_GROUP
 from .EMD import (
     EMD_SIGNATURE,
     VERTEX_BLENDWEIGHT,
@@ -46,9 +56,6 @@ def _create_palette_index(
     return index
 
 
-MAX_BONES_PER_TRIANGLE_GROUP = 24
-
-
 def _get_or_create_triangle_group(
     required_bones: list[str],
     triangle_groups: list[EMD_Triangles],
@@ -85,8 +92,7 @@ def _collect_vertex_data_for_material(
     material_index: int | None,
 ) -> tuple[list[EMD_Vertex], list[EMD_Triangles]]:
     mesh.calc_loop_triangles()
-    with contextlib.suppress(RuntimeError):
-        mesh.calc_normals_split()
+    calc_split_normals(mesh)
 
     # Prefer the active render UV for the primary channel; fallback to the first slot.
     uv_layer = mesh.uv_layers.active or (mesh.uv_layers[0] if mesh.uv_layers else None)
@@ -356,6 +362,7 @@ def _build_submeshes_from_object(
 def _build_emd_from_object(
     obj: bpy.types.Object,
     arm_obj: bpy.types.Object,
+    mesh_data: bpy.types.Mesh | None = None,
 ) -> EMD_File:
     emd = EMD_File()
     emd.version = int(obj.get("emd_file_version", 0x201))
@@ -364,7 +371,7 @@ def _build_emd_from_object(
     model.name = obj.name
     mesh = EMD_Mesh()
     mesh.name = obj.name
-    mesh.submeshes.extend(_build_submeshes_from_object(obj, arm_obj))
+    mesh.submeshes.extend(_build_submeshes_from_object(obj, arm_obj, mesh_data=mesh_data))
     model.meshes.append(mesh)
     emd.models.append(model)
 
@@ -688,20 +695,88 @@ def _write_emd(emd: EMD_File, path: str):
     Path(path).write_bytes(data)
 
 
+def _find_export_armature(obj: bpy.types.Object) -> bpy.types.Object | None:
+    for modifier in obj.modifiers:
+        if modifier.type == "ARMATURE" and modifier.object is not None:
+            return modifier.object
+
+    parent = obj.parent
+    while parent is not None:
+        if parent.type == "ARMATURE":
+            return parent
+        parent = parent.parent
+
+    return None
+
+
+def _scale_mesh_vertices(mesh: bpy.types.Mesh, scale: mathutils.Vector) -> None:
+    if is_identity_scale(scale):
+        return
+
+    for vertex in mesh.vertices:
+        vertex.co = mathutils.Vector(
+            (
+                vertex.co.x * scale.x,
+                vertex.co.y * scale.y,
+                vertex.co.z * scale.z,
+            )
+        )
+    mesh.update()
+
+
+def _to_export_mesh_data_with_bone_scale(
+    context: bpy.types.Context,
+    obj: bpy.types.Object,
+    arm: bpy.types.Object,
+) -> bpy.types.Mesh | None:
+    target_armature = get_scd_target_armature(arm)
+
+    if target_armature is not None:
+        copied_mesh = obj.data.copy()
+        _scale_mesh_vertices(copied_mesh, get_scd_link_scale(arm))
+        return copied_mesh
+
+    with ExitStack() as stack:
+        stack.enter_context(applied_effective_bone_scale_pose(arm, enabled=True))
+
+        depsgraph = context.evaluated_depsgraph_get()
+        obj_eval = obj.evaluated_get(depsgraph)
+        mesh_data = obj_eval.to_mesh()
+        try:
+            copied_mesh = mesh_data.copy()
+        finally:
+            obj_eval.to_mesh_clear()
+
+        return copied_mesh
+
+
 def export_selected(
     context: bpy.types.Context,
     output_dir: str,
+    use_bone_scale: bool = False,
 ) -> list[str]:
     written: list[str] = []
     for obj in context.selected_objects:
         if obj.type != "MESH":
             continue
-        arm = obj.parent if obj.parent and obj.parent.type == "ARMATURE" else None
+        arm = _find_export_armature(obj)
         if arm is None:
-            print(f"Skipping {obj.name}: requires an armature parent.")
+            print(f"Skipping {obj.name}: requires an armature parent or modifier.")
             continue
         remove_unused_vertex_groups(obj)
-        emd = _build_emd_from_object(obj, arm)
+
+        has_bone_scale = bool(get_effective_armature_bone_scales(arm))
+        has_scd_target = get_scd_target_armature(arm) is not None
+        if use_bone_scale and (has_bone_scale or has_scd_target):
+            mesh_data = _to_export_mesh_data_with_bone_scale(context, obj, arm)
+            try:
+                emd = _build_emd_from_object(obj, arm, mesh_data=mesh_data)
+            finally:
+                if mesh_data is not None:
+                    bpy.data.meshes.remove(mesh_data)
+        else:
+            emd = _build_emd_from_object(obj, arm)
+
         safe_name = bpy.path.clean_name(obj.name)
         out_path = os.path.join(output_dir, f"{safe_name}.emd")
         try:

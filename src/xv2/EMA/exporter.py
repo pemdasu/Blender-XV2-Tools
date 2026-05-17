@@ -10,14 +10,10 @@ from pathlib import Path
 import bpy
 import mathutils
 
+from ..consts import EMA_ANIM_TYPE_OBJ, EMA_FLOAT32, EMA_SIGNATURE, EMA_TYPE_OBJ
 from ..EAN import ComponentType, read_ean
 from ..EAN.exporter import export_ean
 from ..ESK import ESK_File
-
-EMA_SIGNATURE = 1095583011  # "#EMA"
-EMA_TYPE_OBJ = 3
-EMA_ANIM_TYPE_OBJ = 0
-EMA_FLOAT32 = 2
 
 
 def _pad_data(data: bytearray, alignment: int) -> None:

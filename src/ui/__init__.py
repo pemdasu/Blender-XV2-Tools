@@ -1,3 +1,15 @@
+from .bone_scale import (
+    BONE_PT_xv2_bone_scale,
+    XV2_OT_bone_scale_reset_selected,
+    refresh_all_bone_scale_previews,
+    schedule_bone_scale_preview_refresh,
+)
+from .bone_scale import (
+    register_properties as register_bone_scale_properties,
+)
+from .bone_scale import (
+    unregister_properties as unregister_bone_scale_properties,
+)
 from .camera_props import (
     CameraEANProperties,
     CameraFOVRollProperties,
@@ -50,4 +62,10 @@ __all__ = [
     "XV2_OT_cam_create_actions",
     "XV2_OT_cam_link_bone",
     "XV2_OT_cam_rename_actions",
+    "BONE_PT_xv2_bone_scale",
+    "XV2_OT_bone_scale_reset_selected",
+    "refresh_all_bone_scale_previews",
+    "schedule_bone_scale_preview_refresh",
+    "register_bone_scale_properties",
+    "unregister_bone_scale_properties",
 ]

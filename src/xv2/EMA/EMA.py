@@ -6,6 +6,20 @@ from dataclasses import dataclass, field
 
 from ...utils import half_to_float, read_cstring
 from ...utils.binary import u16, u32
+from ..consts import (
+    EMA_ANIM_TYPE_OBJ,
+    EMA_DEFAULT_POSITION,
+    EMA_DEFAULT_ROTATION_EULER,
+    EMA_DEFAULT_SCALE,
+    EMA_SIGNATURE,
+    EMA_TYPE_OBJ,
+    INTERP_CUBIC,
+    INTERP_LINEAR,
+    INTERP_QUADRATIC,
+    PARAM_POSITION,
+    PARAM_ROTATION,
+    PARAM_SCALE,
+)
 from ..EAN import (
     ComponentType,
     EANAnimation,
@@ -18,19 +32,7 @@ from ..EAN import (
 from ..ESK import ESK_File
 from .skeleton import parse_ema_skeleton_as_esk
 
-EMA_SIGNATURE = 1095583011
-EMA_TYPE_OBJ = 3
-EMA_ANIM_TYPE_OBJ = 0
-INTERP_LINEAR = 0x00
-INTERP_QUADRATIC = 0x40
-INTERP_CUBIC = 0x80
-PARAM_POSITION = 0
-PARAM_ROTATION = 1
-PARAM_SCALE = 2
 RestTuple = tuple[float, float, float, float]
-EMA_DEFAULT_POSITION: RestTuple = (0.0, 0.0, 0.0, 1.0)
-EMA_DEFAULT_ROTATION_EULER: RestTuple = (0.0, 0.0, 0.0, 1.0)
-EMA_DEFAULT_SCALE: RestTuple = (1.0, 1.0, 1.0, 1.0)
 
 
 @dataclass

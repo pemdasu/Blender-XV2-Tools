@@ -6,9 +6,9 @@ from pathlib import Path
 import bpy
 import mathutils
 
+from ..consts import AXIS3_XV2_TO_BLENDER
 from ..NSK.importer import import_nsk
 from .FMP import (
-    AXIS_XV2_TO_BLENDER,
     iter_object_instance_matrices,
     map_name_from_path,
     normalize_cache_path,
@@ -22,8 +22,6 @@ from .FMP import (
     to_blender_axis,
     to_json_string,
 )
-
-_AXIS3_XV2_TO_BLENDER = AXIS_XV2_TO_BLENDER.to_3x3()
 
 
 def _copy_object_tree(root_object: bpy.types.Object) -> bpy.types.Object:
@@ -126,7 +124,7 @@ def _set_subpart_props(
 
 
 def _to_blender_point(position: tuple[float, float, float]) -> tuple[float, float, float]:
-    vec = _AXIS3_XV2_TO_BLENDER @ mathutils.Vector(position)
+    vec = AXIS3_XV2_TO_BLENDER @ mathutils.Vector(position)
     return (float(vec.x), float(vec.y), float(vec.z))
 
 

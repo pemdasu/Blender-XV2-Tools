@@ -4,7 +4,6 @@ import copy
 import json
 import math
 import os
-import re
 import struct
 from collections import defaultdict
 from collections.abc import Callable, Iterator
@@ -15,8 +14,13 @@ import bpy
 import mathutils
 
 from ...utils.binary import is_valid_offset
+from ..consts import (
+    AXIS3_BLENDER_TO_XV2,
+    BLENDER_DUPLICATE_SUFFIX_RE,
+    FMP_ENTITY_NAME_RE,
+    FMP_OBJECT_NAME_RE,
+)
 from .FMP import (
-    AXIS_BLENDER_TO_XV2,
     FMP_SIGNATURE,
     FMPLOD,
     FMPColliderInstance,
@@ -35,12 +39,6 @@ from .FMP import (
     to_xv2_axis,
 )
 
-_OBJECT_NAME_RE = re.compile(r"^(?P<base>.+)_object(?:_(?P<instance>\d{3}))?(?:\.\d{3})?$")
-_ENTITY_NAME_RE = re.compile(
-    r"^(?P<prefix>.+)_(?P<entity>.+)_entity(?:_(?P<entity_idx>\d{2}))(?:_(?P<instance_idx>\d{3}))?(?:\.\d{3})?$"
-)
-_BLENDER_DUPLICATE_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.\d{3}$")
-_AXIS3_BLENDER_TO_XV2 = AXIS_BLENDER_TO_XV2.to_3x3()
 CollisionMeshData = tuple[
     list[tuple[float, float, float]],
     list[tuple[float, float, float]],
@@ -127,7 +125,7 @@ def _as_str(value, default: str = "") -> str:
 
 
 def _strip_blender_duplicate_suffix(name: str) -> str:
-    match = _BLENDER_DUPLICATE_SUFFIX_RE.match(name)
+    match = BLENDER_DUPLICATE_SUFFIX_RE.match(name)
     if match is None:
         return name
     return _as_str(match.group("base"), name)
@@ -146,7 +144,7 @@ def _parse_json(value: str, default):
 def _is_map_object(obj: bpy.types.Object) -> bool:
     if obj.type != "EMPTY":
         return False
-    if "fmp_object_index" in obj or _OBJECT_NAME_RE.match(obj.name) is not None:
+    if "fmp_object_index" in obj or FMP_OBJECT_NAME_RE.match(obj.name) is not None:
         return True
     return any(
         child.type == "ARMATURE" or _is_entity(child) or _is_collider(child)
@@ -173,7 +171,7 @@ def _is_collider(obj: bpy.types.Object) -> bool:
 
 
 def _object_name(obj: bpy.types.Object) -> str:
-    match = _OBJECT_NAME_RE.match(obj.name)
+    match = FMP_OBJECT_NAME_RE.match(obj.name)
     if match is not None:
         return _as_str(match.group("base"), obj.name)
     stripped_name = _strip_blender_duplicate_suffix(obj.name).strip()
@@ -188,7 +186,7 @@ def _object_name(obj: bpy.types.Object) -> str:
 def _instance_index(obj: bpy.types.Object, default_index: int) -> int:
     if "fmp_instance_index" in obj:
         return _as_int(obj.get("fmp_instance_index"), default_index)
-    match = _OBJECT_NAME_RE.match(obj.name)
+    match = FMP_OBJECT_NAME_RE.match(obj.name)
     if match is None:
         return default_index
     inst_token = match.group("instance")
@@ -254,7 +252,7 @@ def _entity_name(entity_obj: bpy.types.Object, fallback: str) -> str:
         return _as_str(entity_obj.get("fmp_visual_name"), fallback)
     if "fmp_parent_entity" in entity_obj:
         return _as_str(entity_obj.get("fmp_parent_entity"), fallback)
-    match = _ENTITY_NAME_RE.match(entity_obj.name)
+    match = FMP_ENTITY_NAME_RE.match(entity_obj.name)
     if match is not None:
         return _as_str(match.group("entity"), fallback)
     return fallback
@@ -526,12 +524,12 @@ def _collect_colliders(obj_empty: bpy.types.Object) -> list[FMPColliderInstance]
 
 
 def _to_xv2_point(position: mathutils.Vector) -> tuple[float, float, float]:
-    vec = _AXIS3_BLENDER_TO_XV2 @ position
+    vec = AXIS3_BLENDER_TO_XV2 @ position
     return (float(vec.x), float(vec.y), float(vec.z))
 
 
 def _to_xv2_normal(normal: mathutils.Vector) -> tuple[float, float, float]:
-    vec = _AXIS3_BLENDER_TO_XV2 @ normal
+    vec = AXIS3_BLENDER_TO_XV2 @ normal
     if vec.length_squared > 0.0:
         vec.normalize()
     return (float(vec.x), float(vec.y), float(vec.z))

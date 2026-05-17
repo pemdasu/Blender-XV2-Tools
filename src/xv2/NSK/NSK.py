@@ -1,12 +1,9 @@
 from dataclasses import dataclass
 
 from ...utils.binary import u32
+from ..consts import EMD_MAGIC, ESK_MAGIC, NSK_EMD_OFFSET_ADDRESS
 from ..EMD import EMD_File, parse_emd_bytes
 from ..ESK import ESK_File, parse_esk_bytes
-
-ESK_MAGIC = b"#ESK"
-EMD_MAGIC = b"#EMD"
-NSK_EMD_OFFSET_ADDRESS = 20
 
 
 @dataclass

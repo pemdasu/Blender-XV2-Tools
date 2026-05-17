@@ -6,6 +6,8 @@ import bpy
 import mathutils
 
 from ...ui import link_scd_armatures
+from ...utils.blender_warnings import warn_on_error
+from ..consts import SCD_LINK_TARGET_ARMATURE_PROP
 from ..ESK import build_armature
 from .EAN import ComponentType, EANAnimation, EANFile, EANNode, read_ean
 
@@ -383,16 +385,11 @@ def import_ean_data(
         for obj in bpy.data.objects:
             if obj.type != "ARMATURE":
                 continue
-            for pbone in obj.pose.bones:
-                for constraint in pbone.constraints:
-                    if getattr(constraint, "target", None) is target_obj:
-                        if obj.name not in seen:
-                            sources.append(obj)
-                            seen.add(obj.name)
-                        break
-                else:
-                    continue
-                break
+            if str(obj.get(SCD_LINK_TARGET_ARMATURE_PROP, "")).strip() != target_obj.name:
+                continue
+            if obj.name not in seen:
+                sources.append(obj)
+                seen.add(obj.name)
         return sources
 
     old_arm = target_armature if replace_armature else None
@@ -418,7 +415,11 @@ def import_ean_data(
         _relink_armature(old_arm, arm_obj)
         for scd_arm in scd_sources:
             # Relink any SCD armatures that were targeting the old armature to the new one.
-            with contextlib.suppress(AttributeError, RuntimeError):
+            with warn_on_error(
+                "Could not relink an SCD armature after replacing the EAN armature",
+                AttributeError,
+                RuntimeError,
+            ):
                 link_scd_armatures(scd_arm, arm_obj)
         with contextlib.suppress(RuntimeError):
             bpy.data.objects.remove(old_arm, do_unlink=True)
