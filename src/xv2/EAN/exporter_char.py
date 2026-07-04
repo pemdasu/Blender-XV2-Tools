@@ -18,7 +18,6 @@ from ..bone_scale import (
 from ..ESK.ESK import (
     ESK_Bone,
     ESK_File,
-    get_source_local_matrix,
     get_source_root_matrix,
     get_source_root_name,
 )
@@ -127,9 +126,6 @@ def _build_skeleton_from_armature(
             if bone.parent
             else bone.matrix_local.copy()
         )
-        source_local_mat = get_source_local_matrix(bone)
-        if source_local_mat is not None:
-            local_mat = source_local_mat.copy()
         rest_locals[bone.name] = local_mat.copy()
         esk_bone = ESK_Bone(bone.name, idx + 1, local_mat, parent_idx, -1, -1)
         bones.append(esk_bone)

@@ -8,7 +8,6 @@ from ...utils import read_cstring
 from ...utils.binary import i16, u16, u32, u64
 from ..consts import (
     ESK_SIGNATURE,
-    SOURCE_LOCAL_MATRIX_PROP,
     SOURCE_ROOT_MATRIX_PROP,
     SOURCE_ROOT_NAME_PROP,
 )
@@ -67,10 +66,6 @@ def _matrix_from_prop(value) -> mathutils.Matrix | None:
     )
 
 
-def get_source_local_matrix(bone) -> mathutils.Matrix | None:
-    return _matrix_from_prop(bone.get(SOURCE_LOCAL_MATRIX_PROP))
-
-
 def get_source_root_matrix(arm_obj: bpy.types.Object) -> mathutils.Matrix | None:
     arm_data = getattr(arm_obj, "data", None)
     if arm_data is None:
@@ -93,12 +88,6 @@ def store_source_skeleton(arm_obj: bpy.types.Object, esk: ESK_File) -> None:
 
     arm_data[SOURCE_ROOT_NAME_PROP] = str(esk.bones[0].name or arm_obj.name)
     arm_data[SOURCE_ROOT_MATRIX_PROP] = _flatten_matrix(esk.bones[0].matrix)
-
-    for source_bone in esk.bones[1:]:
-        arm_bone = arm_data.bones.get(source_bone.name)
-        if arm_bone is None:
-            continue
-        arm_bone[SOURCE_LOCAL_MATRIX_PROP] = _flatten_matrix(source_bone.matrix)
 
 
 def parse_esk_bytes(data: bytes) -> ESK_File:
