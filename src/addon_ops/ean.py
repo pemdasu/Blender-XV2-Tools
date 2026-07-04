@@ -71,14 +71,53 @@ class EXPORT_OT_cam_ean(Operator, ExportHelper):
 
     filename_ext = ".cam.ean"
     filter_glob: StringProperty(default="*.cam.ean", options={"HIDDEN"})  # type: ignore
+    bake_visual_keying: BoolProperty(  # type: ignore
+        name="Bake with Visual Keying",
+        description=(
+            "Sample every frame so constraint, driver, and IK motion is baked into the export"
+        ),
+        default=True,
+    )
+
+    def check(self, context):
+        # ExportHelper's default check() runs os.path.splitext, which only sees ".ean" in the
+        # compound ".cam.ean" extension and re-appends the full ext on every keystroke. Handle the
+        # compound extension ourselves: strip any trailing extension pieces, then add exactly one.
+        ext = self.filename_ext
+        filepath = self.filepath
+        if not filepath:
+            return False
+        base = filepath
+        while True:
+            lowered = base.lower()
+            for piece in (ext.lower(), ".ean", ".cam"):
+                if lowered.endswith(piece):
+                    base = base[: -len(piece)]
+                    break
+            else:
+                break
+        new_path = base + ext
+        if new_path != filepath:
+            self.filepath = new_path
+            return True
+        return False
+
+    def draw(self, context):
+        self.layout.prop(self, "bake_visual_keying")
 
     def execute(self, context):
         rig = context.object
-        ok = export_cam_ean(self.filepath, rig_obj=rig)
+        ok = export_cam_ean(
+            self.filepath, rig_obj=rig, bake_visual_keying=self.bake_visual_keying
+        )
         if ok:
             self.report({"INFO"}, "Exported Camera EAN")
             return {"FINISHED"}
-        self.report({"ERROR"}, "Failed to export Camera EAN (select a camera rig).")
+        self.report(
+            {"ERROR"},
+            "Failed to export Camera EAN. Select a camera rig (Node_/Target_ actions) "
+            "or a legacy rig (camera named 'Node' with +Name/-Name action pairs).",
+        )
         return {"CANCELLED"}
 
 
@@ -98,11 +137,19 @@ class EXPORT_OT_ean(Operator, ExportHelper):
         description="Bake per-bone XV2 bone scale into exported EAN positions",
         default=False,
     )
+    bake_visual_keying: BoolProperty(  # type: ignore
+        name="Bake with Visual Keying",
+        description=(
+            "Sample every frame so constraint, driver, and IK motion is baked into the export"
+        ),
+        default=True,
+    )
 
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "add_dummy_rest_keys")
         layout.prop(self, "use_bone_scale")
+        layout.prop(self, "bake_visual_keying")
 
     def execute(self, context):
         arm = context.object if context.object and context.object.type == "ARMATURE" else None
@@ -114,6 +161,7 @@ class EXPORT_OT_ean(Operator, ExportHelper):
             arm,
             add_dummy_rest=self.add_dummy_rest_keys,
             use_bone_scale=self.use_bone_scale,
+            bake_visual_keying=self.bake_visual_keying,
         )
         if ok:
             self.report({"INFO"}, "Exported EAN")

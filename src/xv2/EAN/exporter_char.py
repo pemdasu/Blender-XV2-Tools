@@ -378,6 +378,7 @@ def _build_animation_bytes(
     add_dummy_rest: bool = False,
     float_size: int = 1,
     bone_scales: dict[str, mathutils.Vector] | None = None,
+    bake_visual_keying: bool = True,
 ) -> bytes:
     scene = bpy.context.scene
     original_frame = scene.frame_current
@@ -409,6 +410,38 @@ def _build_animation_bytes(
         frames = {int(round(pt.co.x)) for pt in fc.keyframe_points}
         frames_by_bone[bone_name][target].update(frames)
         global_frames.update(frames)
+
+    # Visual keying: a constrained or IK bone only moves through pose.bones[*].matrix, so sample
+    # every frame in the action range to bake that motion (and eased curves) into the export.
+    visual_bones: set[str] = set()
+    if bake_visual_keying:
+        esk_bone_names = {bone.name for bone in esk.bones if bone.index != 0}
+        constrained_bones = {
+            pbone.name
+            for pbone in arm_obj.pose.bones
+            if pbone.name in esk_bone_names and len(pbone.constraints) > 0
+        }
+        export_bones = set(frames_by_bone.keys()) | constrained_bones
+        if export_bones:
+            key_frames = set(global_frames)
+            try:
+                range_start = int(round(action.frame_range[0]))
+                range_end = int(round(action.frame_range[1]))
+            except (AttributeError, TypeError, ValueError):
+                range_start = min(key_frames) if key_frames else 0
+                range_end = max(key_frames) if key_frames else 0
+            if key_frames:
+                range_start = min(range_start, min(key_frames))
+                range_end = max(range_end, max(key_frames))
+            range_start = max(0, range_start)
+            range_end = max(range_end, range_start)
+            dense_frames = set(range(range_start, range_end + 1))
+            for bone_name in export_bones:
+                frames_by_bone[bone_name]["pos"] = set(dense_frames)
+                frames_by_bone[bone_name]["rot"] = set(dense_frames)
+                frames_by_bone[bone_name]["scl"] = set(dense_frames)
+            global_frames.update(dense_frames)
+            visual_bones = export_bones
 
     dummy_bones: set[str] = set()
     if add_dummy_rest:
@@ -459,13 +492,19 @@ def _build_animation_bytes(
             pbone = arm_eval.pose.bones.get(bone_name)
             if pbone is None:
                 continue
-            delta = mathutils.Matrix.LocRotScale(
-                pbone.location.copy(),
-                pbone.rotation_quaternion.copy(),
-                pbone.scale.copy(),
-            )
-            rest_local = rest_locals.get(bone_name, mathutils.Matrix.Identity(4))
-            baked_local = rest_local @ delta
+            if bone_name in visual_bones:
+                # Visual transform relative to the parent's pose (includes constraints/IK).
+                parent = pbone.parent
+                parent_mat = parent.matrix if parent else mathutils.Matrix.Identity(4)
+                baked_local = parent_mat.inverted_safe() @ pbone.matrix
+            else:
+                delta = mathutils.Matrix.LocRotScale(
+                    pbone.location.copy(),
+                    pbone.rotation_quaternion.copy(),
+                    pbone.scale.copy(),
+                )
+                rest_local = rest_locals.get(bone_name, mathutils.Matrix.Identity(4))
+                baked_local = rest_local @ delta
             loc, rot, scl = baked_local.decompose()
             bone_index = bone_indices.get(bone_name)
             if bone_index is not None:
@@ -634,6 +673,7 @@ def export_ean(
     arm_obj: bpy.types.Object,
     add_dummy_rest: bool = False,
     use_bone_scale: bool = False,
+    bake_visual_keying: bool = True,
 ) -> tuple[bool, str | None]:
     if arm_obj is None or arm_obj.type != "ARMATURE":
         return False, "Select an armature to export."
@@ -710,6 +750,7 @@ def export_ean(
                     add_dummy_rest=add_dummy_rest,
                     float_size=preferred_float_size,
                     bone_scales=bone_scales,
+                    bake_visual_keying=bake_visual_keying,
                 )
             if not anim_bytes:
                 continue

@@ -25,11 +25,11 @@ def _collect_frames_from_action(action: bpy.types.Action, data_paths: Sequence[s
 
 
 def _eval_scalar(
-    action: bpy.types.Action, data_path: str, frame: int, default: float = 0.0
+    action: bpy.types.Action, data_path: str, frame: int, default: float = 0.0, index: int = 0
 ) -> float:
     if action is None:
         return default
-    fcurve = find_action_fcurve(action, data_path)
+    fcurve = find_action_fcurve(action, data_path, index=index)
     return fcurve.evaluate(frame) if fcurve else default
 
 
@@ -171,13 +171,48 @@ def _pack_animation(components: list[dict], frame_count: int, use_16bit_indices:
     return bytes(data)
 
 
-def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bool:
-    if rig_obj is None:
-        rig_obj = (
-            bpy.context.object
-            if bpy.context.object and bpy.context.object.type == "EMPTY"
-            else None
-        )
+def _has_node_actions() -> bool:
+    return any(
+        action.name.startswith("Node_") and not action.name.endswith("_data")
+        for action in bpy.data.actions
+    )
+
+
+def _has_legacy_pairs() -> bool:
+    plus = {action.name[1:] for action in bpy.data.actions if action.name.startswith("+")}
+    minus = {action.name[1:] for action in bpy.data.actions if action.name.startswith("-")}
+    return bool(plus & minus)
+
+
+def _detect_cam_mode(active: bpy.types.Object | None) -> str | None:
+    """Pick the export path.
+
+    A file can hold both conventions at once (e.g. an importer-built camera later re-rigged into
+    the legacy ``+Name`` / ``-Name`` control rig). The active object's current action tells us
+    which rig is wired up, so it wins over a scan of every action in the file.
+    """
+    if active is not None:
+        if active.type == "CAMERA":
+            action = active.animation_data.action if active.animation_data else None
+            if action and action.name.startswith("+"):
+                return "legacy"
+        elif active.type == "EMPTY" and any(child.type == "CAMERA" for child in active.children):
+            return "importer"
+
+    if _has_node_actions():
+        return "importer"
+    if _has_legacy_pairs():
+        return "legacy"
+    return None
+
+
+CollectedAnimations = tuple[list[bytes], list[int], bytearray]
+
+
+def _collect_importer_rig_animations(
+    rig_obj: bpy.types.Object | None,
+    bake_visual_keying: bool = True,
+) -> CollectedAnimations | None:
     cam_obj = None
     target_obj = None
 
@@ -194,7 +229,7 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
             else None
         )
     if cam_obj is None:
-        return False
+        return None
 
     if target_obj is None:
         for constraint in cam_obj.constraints:
@@ -224,7 +259,7 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
     )
     base_names = [entry[1] for entry in base_entries_sorted]
     if not base_names:
-        return False
+        return None
 
     animations_bytes: list[bytes] = []
     name_offsets: list[int] = []
@@ -246,6 +281,9 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
         frames.update(_collect_frames_from_action(data_action, ("xv2_roll", "xv2_fov")))
         if not frames:
             frames.add(0)
+        if bake_visual_keying:
+            # Sample every frame to keep constraint and driver motion that sits between sparse keys.
+            frames = set(range(min(frames), max(frames) + 1))
         frame_count = max(frames) + 1
         use_16bit_indices = frame_count > 255
 
@@ -290,15 +328,32 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
             cam_loc = cam_eval.matrix_world.translation
             pos_keyframes.append((frame, *_map_vec_to_xv2(cam_loc.x, cam_loc.y, cam_loc.z), 1.0))
 
-            roll_val = _eval_scalar(
-                data_action, "xv2_roll", frame, getattr(cam_obj.data, "xv2_roll", 0.0)
-            )
-            fov_val = _eval_scalar(
-                data_action, "xv2_fov", frame, getattr(cam_obj.data, "xv2_fov", 40.0)
-            )
-            scale_keyframes.append(
-                (frame, -math.radians(roll_val), math.radians(fov_val), 0.0, 0.0)
-            )
+            if bake_visual_keying:
+                # Read the evaluated camera so drivers and constraints on roll and FOV get baked.
+                # FOV comes from the final lens rather than the raw xv2_fov property.
+                cam_data_eval = cam_eval.data
+                roll_val = getattr(
+                    cam_data_eval, "xv2_roll", getattr(cam_obj.data, "xv2_roll", 0.0)
+                )
+                lens = getattr(cam_data_eval, "lens", 0.0)
+                sensor = getattr(cam_data_eval, "sensor_height", 0.0) or getattr(
+                    cam_obj.data, "sensor_height", 32.0
+                )
+                if lens > 1e-6 and sensor > 1e-6:
+                    fov_rad = 2.0 * math.atan(sensor / (2.0 * lens))
+                else:
+                    fov_rad = math.radians(getattr(cam_data_eval, "xv2_fov", 40.0))
+                scale_keyframes.append((frame, -math.radians(roll_val), fov_rad, 0.0, 0.0))
+            else:
+                roll_val = _eval_scalar(
+                    data_action, "xv2_roll", frame, getattr(cam_obj.data, "xv2_roll", 0.0)
+                )
+                fov_val = _eval_scalar(
+                    data_action, "xv2_fov", frame, getattr(cam_obj.data, "xv2_fov", 40.0)
+                )
+                scale_keyframes.append(
+                    (frame, -math.radians(roll_val), math.radians(fov_val), 0.0, 0.0)
+                )
 
             if target_obj:
                 targ_eval = target_obj.evaluated_get(depsgraph)
@@ -356,6 +411,154 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
         name_offsets.append(len(names_blob))
         names_blob.extend(base.encode("ascii", "ignore") + b"\x00")
 
+    return animations_bytes, name_offsets, names_blob
+
+
+def _find_legacy_target(
+    cam_obj: bpy.types.Object, target_action: bpy.types.Action
+) -> bpy.types.Object | None:
+    owner = next(
+        (
+            obj
+            for obj in bpy.data.objects
+            if obj.animation_data and obj.animation_data.action is target_action
+        ),
+        None,
+    )
+    if owner is not None:
+        return owner
+    for constraint in cam_obj.constraints:
+        if constraint.type == "TRACK_TO" and getattr(constraint, "target", None):
+            return constraint.target
+    return None
+
+
+def _collect_legacy_animations() -> CollectedAnimations | None:
+    cam_obj = (
+        bpy.context.object
+        if bpy.context.object and bpy.context.object.type == "CAMERA"
+        else None
+    )
+    if cam_obj is None:
+        cam_obj = next(
+            (obj for obj in bpy.data.objects if obj.type == "CAMERA" and obj.name == "Node"),
+            None,
+        )
+    if cam_obj is None:
+        cam_obj = next((obj for obj in bpy.data.objects if obj.type == "CAMERA"), None)
+    if cam_obj is None:
+        return None
+
+    # Pair +Name / -Name actions by the shared suffix.
+    plus_actions: dict[str, bpy.types.Action] = {}
+    minus_actions: dict[str, bpy.types.Action] = {}
+    for action in bpy.data.actions:
+        name = action.name
+        if name.startswith("+"):
+            plus_actions.setdefault(name[1:], action)
+        elif name.startswith("-"):
+            minus_actions.setdefault(name[1:], action)
+
+    base_names = sorted(base for base in plus_actions if base in minus_actions)
+    if not base_names:
+        return None
+
+    scene = bpy.context.scene
+    depsgraph = bpy.context.view_layer.depsgraph
+    original_frame = scene.frame_current
+
+    animations_bytes: list[bytes] = []
+    name_offsets: list[int] = []
+    names_blob = bytearray()
+
+    for base in base_names:
+        cam_action = plus_actions[base]
+        target_action = minus_actions[base]
+        target_obj = _find_legacy_target(cam_obj, target_action)
+
+        # Motion comes from the constraint stack, so sample every frame across the pair.
+        frame_count = max(int(cam_action.frame_range[1]), int(target_action.frame_range[1])) + 1
+        use_16bit_indices = frame_count > 255
+        sensor = getattr(cam_obj.data, "sensor_width", 32.0)
+
+        # Temporarily assign the paired actions so evaluated sampling bakes the rig. The control
+        # empties keep their own actions so their constraints still drive the camera.
+        cam_anim_data = cam_obj.animation_data or cam_obj.animation_data_create()
+        orig_cam_action = cam_anim_data.action
+        cam_anim_data.action = cam_action
+
+        target_anim_created = False
+        orig_target_action = None
+        if target_obj:
+            if target_obj.animation_data is None:
+                target_obj.animation_data_create()
+                target_anim_created = True
+            orig_target_action = target_obj.animation_data.action
+            target_obj.animation_data.action = target_action
+
+        pos_keyframes: list[tuple[int, float, float, float, float]] = []
+        scale_keyframes: list[tuple[int, float, float, float, float]] = []
+        target_keyframes: list[tuple[int, float, float, float, float]] = []
+
+        for frame in range(frame_count):
+            scene.frame_set(frame)
+            if hasattr(bpy.context.view_layer, "update"):
+                bpy.context.view_layer.update()
+
+            cam_eval = cam_obj.evaluated_get(depsgraph)
+            cam_loc = cam_eval.matrix_world.translation
+            pos_keyframes.append((frame, *_map_vec_to_xv2(cam_loc.x, cam_loc.y, cam_loc.z), 1.0))
+
+            scale_y = cam_eval.matrix_world.to_scale().y
+            fov = 2.0 * math.atan(sensor / (2.0 * scale_y)) if abs(scale_y) > 1e-6 else 0.0
+            roll = _eval_scalar(target_action, "rotation_euler", frame, 0.0, index=1)
+            # Legacy quirk: flip roll when the camera's raw + action location Y is non-negative.
+            if _eval_scalar(cam_action, "location", frame, 0.0, index=1) >= 0:
+                roll = -roll
+            scale_keyframes.append((frame, roll, fov, 0.0, 0.0))
+
+            if target_obj:
+                targ_eval = target_obj.evaluated_get(depsgraph)
+                targ_loc = targ_eval.matrix_world.translation
+                target_keyframes.append(
+                    (frame, *_map_vec_to_xv2(targ_loc.x, targ_loc.y, targ_loc.z), 1.0)
+                )
+
+        components: list[dict] = []
+        pos_keyframes = _calc_edge_frames(pos_keyframes, frame_count)
+        components.append(
+            {"type": ComponentType.Position, "i01": 3, "i02": 0, "keyframes": pos_keyframes}
+        )
+
+        scale_keyframes = _calc_edge_frames(scale_keyframes, frame_count)
+        components.append(
+            {"type": ComponentType.Scale, "i01": 3, "i02": 0, "keyframes": scale_keyframes}
+        )
+
+        if target_obj and target_keyframes:
+            target_keyframes = _calc_edge_frames(target_keyframes, frame_count)
+            components.append(
+                {"type": ComponentType.Rotation, "i01": 3, "i02": 0, "keyframes": target_keyframes}
+            )
+
+        cam_anim_data.action = orig_cam_action
+        if target_obj and target_obj.animation_data:
+            target_obj.animation_data.action = orig_target_action
+            if target_anim_created:
+                target_obj.animation_data.action = None
+        scene.frame_set(original_frame)
+
+        anim_bytes = _pack_animation(components, frame_count, use_16bit_indices=use_16bit_indices)
+        animations_bytes.append(anim_bytes)
+        name_offsets.append(len(names_blob))
+        names_blob.extend(base.encode("ascii", "ignore") + b"\x00")
+
+    return animations_bytes, name_offsets, names_blob
+
+
+def _assemble_cam_ean(
+    animations_bytes: list[bytes], name_offsets: list[int], names_blob: bytearray
+) -> bytes:
     out = bytearray([35, 69, 65, 78, 254, 255, 32, 0])
     out.extend(struct.pack("<I", 37568))
     out.extend(b"\x00\x00\x00\x00")
@@ -386,7 +589,36 @@ def export_cam_ean(filepath: str, rig_obj: bpy.types.Object | None = None) -> bo
             end = names_blob.find(b"\x00", off)
             out.extend(names_blob[off : end + 1])
 
-    Path(filepath).write_bytes(out)
+    return bytes(out)
+
+
+def export_cam_ean(
+    filepath: str,
+    rig_obj: bpy.types.Object | None = None,
+    bake_visual_keying: bool = True,
+) -> bool:
+    if rig_obj is None:
+        rig_obj = (
+            bpy.context.object
+            if bpy.context.object and bpy.context.object.type == "EMPTY"
+            else None
+        )
+
+    mode = _detect_cam_mode(bpy.context.object)
+    if mode == "importer":
+        collected = _collect_importer_rig_animations(rig_obj, bake_visual_keying)
+    elif mode == "legacy":
+        collected = _collect_legacy_animations()
+    else:
+        return False
+
+    if not collected:
+        return False
+    animations_bytes, name_offsets, names_blob = collected
+    if not animations_bytes:
+        return False
+
+    Path(filepath).write_bytes(_assemble_cam_ean(animations_bytes, name_offsets, names_blob))
     return True
 
 
