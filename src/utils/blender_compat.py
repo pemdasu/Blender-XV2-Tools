@@ -12,11 +12,11 @@ def check_blender_version() -> None:
     if MIN_BLENDER_VERSION <= version < MAX_BLENDER_VERSION_EXCLUSIVE:
         return
 
-    supported = "4.0.0 through 5.0.x"
+    supported = "4.0.0 through 5.1.1"
     current = ".".join(str(part) for part in version)
     raise RuntimeError(
         f"Blender XV2 Tools supports Blender {supported}. "
-        f"You are running Blender {current}. Install Blender 4.0 or newer, up to Blender 5.0.x."
+        f"You are running Blender {current}. Install Blender 4.0 or newer, up to Blender 5.1.1."
     )
 
 
