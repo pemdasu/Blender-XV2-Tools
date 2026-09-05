@@ -107,9 +107,7 @@ class EXPORT_OT_cam_ean(Operator, ExportHelper):
 
     def execute(self, context):
         rig = context.object
-        ok = export_cam_ean(
-            self.filepath, rig_obj=rig, bake_visual_keying=self.bake_visual_keying
-        )
+        ok = export_cam_ean(self.filepath, rig_obj=rig, bake_visual_keying=self.bake_visual_keying)
         if ok:
             self.report({"INFO"}, "Exported Camera EAN")
             return {"FINISHED"}
@@ -132,11 +130,6 @@ class EXPORT_OT_ean(Operator, ExportHelper):
         description="Add a rest pose keyframe at frame 0 for bones with no keyframes",
         default=False,
     )
-    use_bone_scale: BoolProperty(  # type: ignore
-        name="Use XV2 Bone Scale",
-        description="Bake per-bone XV2 bone scale into exported EAN positions",
-        default=False,
-    )
     bake_visual_keying: BoolProperty(  # type: ignore
         name="Bake with Visual Keying",
         description=(
@@ -148,7 +141,6 @@ class EXPORT_OT_ean(Operator, ExportHelper):
     def draw(self, context):
         layout = self.layout
         layout.prop(self, "add_dummy_rest_keys")
-        layout.prop(self, "use_bone_scale")
         layout.prop(self, "bake_visual_keying")
 
     def execute(self, context):
@@ -160,7 +152,6 @@ class EXPORT_OT_ean(Operator, ExportHelper):
             self.filepath,
             arm,
             add_dummy_rest=self.add_dummy_rest_keys,
-            use_bone_scale=self.use_bone_scale,
             bake_visual_keying=self.bake_visual_keying,
         )
         if ok:

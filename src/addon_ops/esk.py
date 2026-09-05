@@ -44,22 +44,13 @@ class EXPORT_OT_esk(Operator, ExportHelper):
 
     filename_ext = ".esk"
     filter_glob: StringProperty(default="*.esk", options={"HIDDEN"})  # type: ignore
-    use_bone_scale: BoolProperty(  # type: ignore
-        name="Use XV2 Bone Scale",
-        description="Bake per-bone XV2 bone scale into exported ESK positions",
-        default=True,
-    )
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "use_bone_scale")
 
     def execute(self, context):
         arm = context.object if context.object and context.object.type == "ARMATURE" else None
         if arm is None:
             self.report({"ERROR"}, "Select an armature to export.")
             return {"CANCELLED"}
-        ok, error = export_esk(self.filepath, arm, use_bone_scale=self.use_bone_scale)
+        ok, error = export_esk(self.filepath, arm)
         if ok:
             self.report({"INFO"}, "Exported ESK")
             return {"FINISHED"}

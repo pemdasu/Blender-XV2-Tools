@@ -5,11 +5,6 @@ from pathlib import Path
 import bpy
 import mathutils
 
-from ..bone_scale import (
-    bake_parent_scale_into_matrix,
-    get_effective_armature_bone_scales,
-    get_inherited_parent_scale,
-)
 from ..EAN.exporter_char import _build_skeleton_from_armature
 from .ESK import ESK_SIGNATURE, ESK_Bone
 
@@ -46,20 +41,10 @@ def get_or_create_skeleton_id(arm_obj: bpy.types.Object) -> int:
 
 def _pack_relative_transforms(
     bones: list[ESK_Bone],
-    bone_scales: dict[str, mathutils.Vector] | None = None,
 ) -> bytes:
-    bone_scales = bone_scales or {}
-    parent_scale_cache: dict[int, mathutils.Vector] = {}
     out = bytearray()
-    for bone_index, bone in enumerate(bones):
-        parent_scale = get_inherited_parent_scale(
-            bones,
-            bone_index,
-            bone_scales,
-            parent_scale_cache,
-        )
-        matrix = bake_parent_scale_into_matrix(bone.matrix, parent_scale)
-        loc, rot, scale = matrix.decompose()
+    for bone in bones:
+        loc, rot, scale = bone.matrix.decompose()
         out.extend(struct.pack("<4f", loc.x, loc.y, loc.z, 1.0))
         out.extend(struct.pack("<4f", rot.x, rot.y, rot.z, rot.w))
         out.extend(struct.pack("<4f", scale.x, scale.y, scale.z, 1.0))
@@ -68,23 +53,14 @@ def _pack_relative_transforms(
 
 def _pack_absolute_transforms(
     bones: list[ESK_Bone],
-    bone_scales: dict[str, mathutils.Vector] | None = None,
 ) -> bytes:
-    bone_scales = bone_scales or {}
     out = bytearray()
     world_mats: dict[int, mathutils.Matrix] = {}
-    parent_scale_cache: dict[int, mathutils.Vector] = {}
 
     def compute_world(bone_data: ESK_Bone) -> mathutils.Matrix:
         if bone_data.index in world_mats:
             return world_mats[bone_data.index]
-        parent_scale = get_inherited_parent_scale(
-            bones,
-            bone_data.index,
-            bone_scales,
-            parent_scale_cache,
-        )
-        matrix = bake_parent_scale_into_matrix(bone_data.matrix, parent_scale)
+        matrix = bone_data.matrix
         if (
             0 <= bone_data.parent_index < len(bones)
             and bones[bone_data.parent_index] is not bone_data
@@ -105,7 +81,6 @@ def _build_esk_skeleton_bytes(
     bones: list[ESK_Bone],
     skeleton_flag: int = 0,
     skeleton_id: int = 0,
-    bone_scales: dict[str, mathutils.Vector] | None = None,
 ) -> bytes:
     bone_count = len(bones)
     header_size = 36
@@ -145,13 +120,13 @@ def _build_esk_skeleton_bytes(
         data.extend(b"\x00" * pad)
     struct.pack_into("<I", data, 12, rel_off)
 
-    data.extend(_pack_relative_transforms(bones, bone_scales))
+    data.extend(_pack_relative_transforms(bones))
 
     abs_off = _align16_size(len(data))
     if abs_off > len(data):
         data.extend(b"\x00" * (abs_off - len(data)))
     struct.pack_into("<I", data, 16, abs_off)
-    data.extend(_pack_absolute_transforms(bones, bone_scales))
+    data.extend(_pack_absolute_transforms(bones))
 
     return bytes(data)
 
@@ -196,7 +171,6 @@ def _export_using_source_template(
     filepath: str,
     source_path: str,
     bones: list[ESK_Bone],
-    bone_scales: dict[str, mathutils.Vector],
 ) -> bool:
     src = Path(source_path)
     if not src.is_file():
@@ -216,8 +190,8 @@ def _export_using_source_template(
         if source_names != [bone.name for bone in bones]:
             return False
 
-        rel_blob = _pack_relative_transforms(bones, bone_scales)
-        abs_blob = _pack_absolute_transforms(bones, bone_scales)
+        rel_blob = _pack_relative_transforms(bones)
+        abs_blob = _pack_absolute_transforms(bones)
         rel_off = int(layout["rel_off"])
         abs_off = int(layout["abs_off"])
         if rel_off + len(rel_blob) > len(data):
@@ -239,20 +213,17 @@ def _export_using_source_template(
 def export_esk(
     filepath: str,
     arm_obj: bpy.types.Object,
-    use_bone_scale: bool = False,
 ) -> tuple[bool, str | None]:
     if arm_obj is None or arm_obj.type != "ARMATURE":
         return False, "Select an armature to export."
 
     try:
         esk, _skeleton_bytes, _rest_locals = _build_skeleton_from_armature(arm_obj)
-        bone_scales = get_effective_armature_bone_scales(arm_obj) if use_bone_scale else {}
         source_path = str(arm_obj.get("esk_source_path", "")).strip()
         if source_path and _export_using_source_template(
             filepath,
             source_path,
             esk.bones,
-            bone_scales,
         ):
             return True, None
 
@@ -268,7 +239,6 @@ def export_esk(
             esk.bones,
             skeleton_flag=skeleton_flag,
             skeleton_id=skeleton_id,
-            bone_scales=bone_scales,
         )
 
         out = bytearray()

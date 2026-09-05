@@ -195,15 +195,6 @@ class EXPORT_OT_emd(Operator, ExportHelper):
 
     filename_ext = ".emd"
     filter_glob: StringProperty(default="*.emd", options={"HIDDEN"})  # type: ignore
-    use_bone_scale: BoolProperty(  # type: ignore
-        name="Use XV2 Bone Scale",
-        description="Export meshes with per-bone XV2 bone scale values applied",
-        default=False,
-    )
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "use_bone_scale")
 
     def execute(self, context):
         output_dir = os.path.dirname(self.filepath) if self.filepath else ""
@@ -214,7 +205,7 @@ class EXPORT_OT_emd(Operator, ExportHelper):
             self.report({"ERROR"}, f"Directory does not exist: {output_dir}")
             return {"CANCELLED"}
 
-        written = export_selected(context, output_dir, use_bone_scale=self.use_bone_scale)
+        written = export_selected(context, output_dir)
         if not written:
             self.report(
                 {"WARNING"},

@@ -12,7 +12,6 @@ from .addon_ops import (
     unregister_icons,
 )
 from .ui import (
-    BONE_PT_xv2_bone_scale,
     CameraEANProperties,
     DATA_PT_xv2_camera_actions,
     EMD_OT_texture_sampler_add,
@@ -24,14 +23,10 @@ from .ui import (
     SCDLinkSettings,
     VIEW3D_PT_emd_texture_samplers,
     VIEW3D_PT_scd_link,
-    XV2_OT_bone_scale_reset_selected,
     XV2_OT_cam_create_actions,
     XV2_OT_cam_link_bone,
     XV2_OT_cam_rename_actions,
     XV2_OT_scd_link_to_armature,
-    register_bone_scale_properties,
-    schedule_bone_scale_preview_refresh,
-    unregister_bone_scale_properties,
 )
 from .utils.blender_compat import check_blender_version
 
@@ -51,8 +46,6 @@ UI_CLASSES = [
     XV2_OT_cam_create_actions,
     XV2_OT_cam_link_bone,
     XV2_OT_cam_rename_actions,
-    BONE_PT_xv2_bone_scale,
-    XV2_OT_bone_scale_reset_selected,
 ]
 
 CLASSES = [
@@ -79,12 +72,9 @@ def _unregister_class(cls):
 def register():
     check_blender_version()
     register_icons()
-    register_bone_scale_properties()
 
     for cls in CLASSES:
         _register_class(cls)
-
-    schedule_bone_scale_preview_refresh()
 
     bpy.types.Scene.xv2_scd_link = bpy.props.PointerProperty(type=SCDLinkSettings)
     bpy.types.Object.emd_texture_samplers = CollectionProperty(type=EMDTextureSamplerPropertyGroup)
@@ -117,7 +107,6 @@ def unregister():
     for cls in reversed(CLASSES):
         _unregister_class(cls)
 
-    unregister_bone_scale_properties()
     unregister_icons()
 
 

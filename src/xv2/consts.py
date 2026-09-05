@@ -2,11 +2,7 @@ import re
 
 import mathutils
 
-BONE_SCALE_PROP = "xv2_bone_scale"
-BONE_SCALE_IDENTITY = mathutils.Vector((1.0, 1.0, 1.0))
-BONE_SCALE_EPSILON = 1e-6
 SCD_LINK_TARGET_ARMATURE_PROP = "xv2_scd_target_armature"
-SCD_LINK_TARGET_BONE_PROP = "xv2_scd_target_bone"
 SCD_LINK_CONSTRAINT_NAME = "SCD_Link"
 
 DDSD_LINEARSIZE = 0x80000

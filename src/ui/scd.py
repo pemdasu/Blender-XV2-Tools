@@ -4,7 +4,6 @@ from bpy.props import PointerProperty, StringProperty
 from ..xv2.consts import (
     SCD_LINK_CONSTRAINT_NAME,
     SCD_LINK_TARGET_ARMATURE_PROP,
-    SCD_LINK_TARGET_BONE_PROP,
 )
 
 
@@ -49,12 +48,9 @@ def link_scd_armatures(
     for bone in source.data.bones:
         dest_name = mapped.get(bone.name, "")
         if not dest_name:
-            if SCD_LINK_TARGET_BONE_PROP in bone:
-                del bone[SCD_LINK_TARGET_BONE_PROP]
             skipped += 1
             continue
 
-        bone[SCD_LINK_TARGET_BONE_PROP] = dest_name
         pose_bone = source.pose.bones.get(bone.name)
         if pose_bone is not None:
             constraint = pose_bone.constraints.new(type="COPY_TRANSFORMS")

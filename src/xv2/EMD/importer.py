@@ -15,7 +15,6 @@ from ...utils.blender_compat import (
     merge_selected_by_distance,
     set_custom_split_normals,
 )
-from ..bone_scale import scale_vector
 from ..consts import AUTO_SMOOTH_ANGLE_DEGREES
 from ..EMB import (
     _extract_dyt_lines,
@@ -49,9 +48,7 @@ from .EMD import EMD_File, EMD_Submesh, parse_emd, set_sampler_custom_properties
 _BIND_SCALE_EPS = 1e-3
 
 
-def _grow_tiny_mesh(
-    obj: bpy.types.Object, arm_obj: bpy.types.Object, esk: ESK_File
-) -> None:
+def _grow_tiny_mesh(obj: bpy.types.Object, arm_obj: bpy.types.Object, esk: ESK_File) -> None:
     if arm_obj is None or arm_obj.data is None:
         return
 
@@ -77,7 +74,9 @@ def _grow_tiny_mesh(
         parent = esk.bones[index].parent_index
         if 0 <= parent < len(esk.bones) and esk.bones[parent] is not esk.bones[index]:
             parent_scale = total_scale(parent)
-            scale = scale_vector(scale, parent_scale)
+            scale = mathutils.Vector(
+                (scale.x * parent_scale.x, scale.y * parent_scale.y, scale.z * parent_scale.z)
+            )
         total_cache[index] = scale
         return scale
 
