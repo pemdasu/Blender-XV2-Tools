@@ -1,3 +1,4 @@
+import secrets
 import struct
 from pathlib import Path
 
@@ -33,6 +34,14 @@ def _read_arm_u64_prop(arm_obj: bpy.types.Object, key: str, default: int) -> int
             return int(str(raw).strip())
         except (TypeError, ValueError):
             return int(default)
+
+
+def get_or_create_skeleton_id(arm_obj: bpy.types.Object) -> int:
+    skeleton_id = _read_arm_u64_prop(arm_obj, "esk_skeleton_id", 0)
+    if skeleton_id == 0:
+        skeleton_id = secrets.randbits(64) or 1
+        arm_obj["esk_skeleton_id"] = str(skeleton_id)
+    return skeleton_id
 
 
 def _pack_relative_transforms(
@@ -253,7 +262,7 @@ def export_esk(
         i24 = _read_arm_int_prop(arm_obj, "esk_i24", 0) & 0xFFFFFFFF
         default_skel_flag = 0 if arm_obj.get("ean_source") else 1
         skeleton_flag = _read_arm_int_prop(arm_obj, "esk_skeleton_flag", default_skel_flag)
-        skeleton_id = _read_arm_u64_prop(arm_obj, "esk_skeleton_id", 0)
+        skeleton_id = get_or_create_skeleton_id(arm_obj)
 
         skeleton_bytes = _build_esk_skeleton_bytes(
             esk.bones,

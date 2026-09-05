@@ -10,10 +10,12 @@ from pathlib import Path
 import bpy
 import mathutils
 
-from ..consts import EMA_ANIM_TYPE_OBJ, EMA_FLOAT32, EMA_SIGNATURE, EMA_TYPE_OBJ
+from ...utils import float_to_half
+from ..consts import EMA_ANIM_TYPE_OBJ, EMA_FLOAT16, EMA_SIGNATURE, EMA_TYPE_OBJ
 from ..EAN import ComponentType, read_ean
 from ..EAN.exporter import export_ean
-from ..ESK import ESK_File
+from ..ESK import DEFAULT_BONE_EXTRA_BYTES, ESK_File
+from ..ESK.exporter import get_or_create_skeleton_id
 
 
 def _pad_data(data: bytearray, alignment: int) -> None:
@@ -82,6 +84,7 @@ def _build_ema_skeleton_bytes(skeleton: ESK_File) -> bytes:
     out.extend(struct.pack("<I", 0))  # names offset
     out.extend(struct.pack("<I", 0))  # IK2 offset
     out.extend(struct.pack("<I", 0))  # IK2 names offset
+    extra_values_offset_field = len(out)
     out.extend(struct.pack("<I", 0))  # extra values offset
     out.extend(struct.pack("<I", 0))  # abs matrix offset
     out.extend(struct.pack("<I", 0))  # IK offset
@@ -116,6 +119,8 @@ def _build_ema_skeleton_bytes(skeleton: ESK_File) -> bytes:
         out.extend(str(bone.name).encode("utf8", errors="ignore") + b"\x00")
 
     _pad_data(out, 16)
+    struct.pack_into("<I", out, extra_values_offset_field, len(out))
+    out.extend(DEFAULT_BONE_EXTRA_BYTES * bone_count)
     return bytes(out)
 
 
@@ -157,7 +162,7 @@ def _build_ema_animation_bytes(animation, bone_index_by_name: dict[str, int]) ->
     out.extend(struct.pack("<I", 0))  # value count
     out.extend(struct.pack("<B", EMA_ANIM_TYPE_OBJ))
     out.extend(struct.pack("<B", 0))  # light unknown
-    out.extend(struct.pack("<H", EMA_FLOAT32))
+    out.extend(struct.pack("<H", EMA_FLOAT16))
     name_offset_field = len(out)
     out.extend(struct.pack("<I", 0))
     values_offset_field = len(out)
@@ -165,8 +170,8 @@ def _build_ema_animation_bytes(animation, bone_index_by_name: dict[str, int]) ->
 
     command_ptrs_start = len(out)
     out.extend(b"\x00" * (4 * len(commands)))
-    values: list[float] = []
-    value_index_by_bytes: dict[bytes, int] = {}
+    values: list[int] = []
+    value_index_by_half: dict[int, int] = {}
 
     for command_index, (bone_index, parameter, axis, keyframes) in enumerate(commands):
         command_start = len(out)
@@ -201,14 +206,14 @@ def _build_ema_animation_bytes(animation, bone_index_by_name: dict[str, int]) ->
         struct.pack_into("<H", out, index_offset_field, index_offset & 0xFFFF)
 
         for _frame, value in keyframes:
-            packed_value = struct.pack("<f", float(value))
-            value_index = value_index_by_bytes.get(packed_value)
+            half_value = float_to_half(float(value))
+            value_index = value_index_by_half.get(half_value)
             if value_index is None:
                 value_index = len(values)
                 if value_index > 0xFFFF:
                     raise ValueError("EMA export value table exceeded 65535 unique entries.")
-                values.append(struct.unpack("<f", packed_value)[0])
-                value_index_by_bytes[packed_value] = value_index
+                values.append(half_value)
+                value_index_by_half[half_value] = value_index
             out.extend(struct.pack("<H", value_index & 0xFFFF))
             out.extend(struct.pack("<B", 0))  # padding
             out.extend(struct.pack("<B", 0))  # linear interpolation
@@ -219,7 +224,7 @@ def _build_ema_animation_bytes(animation, bone_index_by_name: dict[str, int]) ->
     struct.pack_into("<I", out, values_count_field, len(values))
     struct.pack_into("<I", out, values_offset_field, len(out))
     for value in values:
-        out.extend(struct.pack("<f", value))
+        out.extend(struct.pack("<H", value))
     _pad_data(out, 4)
 
     animation_name = str(animation.name or animation.index)
@@ -310,6 +315,7 @@ def export_ema(
             return False, error or "Failed to export intermediate EAN data."
 
         ean_file = read_ean(temp_path, link_skeleton=True)
+        ean_file.skeleton.skeleton_id = get_or_create_skeleton_id(arm_obj)
         version = int(arm_obj.get("ema_version", 0x92C0))
         i_20 = int(arm_obj.get("ema_i20", 0))
         i_24 = int(arm_obj.get("ema_i24", 0))

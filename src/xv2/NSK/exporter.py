@@ -13,10 +13,11 @@ from ..consts import BLENDER_DUPLICATE_SUFFIX_RE
 from ..EAN.exporter_char import _build_skeleton_from_armature
 from ..EMD import EMD_File, EMD_Mesh, EMD_Model
 from ..EMD.exporter import _build_emd_bytes, _build_submeshes_from_object
-from ..ESK import ESK_SIGNATURE, ESK_Bone
+from ..ESK import DEFAULT_BONE_EXTRA_BYTES, ESK_SIGNATURE, ESK_Bone
 from ..ESK.exporter import (
     _pack_relative_transforms,
     _read_skeleton_layout,
+    get_or_create_skeleton_id,
 )
 from .NSK import NSK_EMD_OFFSET_ADDRESS
 
@@ -505,7 +506,7 @@ def _build_esk_bytes_from_armature(arm_obj: bpy.types.Object) -> bytes:
     i24 = int(arm_obj.get("esk_i24", 0)) & 0xFFFFFFFF
     default_skel_flag = 0 if arm_obj.get("ean_source") else 1
     skeleton_flag = int(arm_obj.get("esk_skeleton_flag", default_skel_flag))
-    skeleton_id = int(arm_obj.get("esk_skeleton_id", 0))
+    skeleton_id = get_or_create_skeleton_id(arm_obj)
 
     skeleton_bytes = _build_nsk_skeleton_bytes(
         esk.bones,
@@ -574,8 +575,7 @@ def _build_nsk_skeleton_bytes(
     extra_off = len(data)
     struct.pack_into("<I", data, 24, extra_off)
     # NSK keeps per-bone extra values; default tuple is (0, 0, 65535, 0).
-    for _ in bones:
-        data.extend(struct.pack("<HHHH", 0, 0, 0xFFFF, 0))
+    data.extend(DEFAULT_BONE_EXTRA_BYTES * bone_count)
 
     return bytes(data)
 

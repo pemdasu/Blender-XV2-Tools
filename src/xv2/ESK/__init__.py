@@ -1,4 +1,12 @@
-from .ESK import ESK_SIGNATURE, ESK_Bone, ESK_File, build_armature, parse_esk, parse_esk_bytes
+from .ESK import (
+    DEFAULT_BONE_EXTRA_BYTES,
+    ESK_SIGNATURE,
+    ESK_Bone,
+    ESK_File,
+    build_armature,
+    parse_esk,
+    parse_esk_bytes,
+)
 from .importer import import_esk
 
 
@@ -10,6 +18,7 @@ def export_esk(filepath: str, arm_obj):
 
 
 __all__ = [
+    "DEFAULT_BONE_EXTRA_BYTES",
     "ESK_SIGNATURE",
     "ESK_Bone",
     "ESK_File",

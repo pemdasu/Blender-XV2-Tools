@@ -27,7 +27,7 @@ from ..EMD import (
     read_texture_sampler_defs,
     read_vertices,
 )
-from ..ESK import ESK_File
+from ..ESK import DEFAULT_BONE_EXTRA_BYTES, ESK_File
 
 
 def _pad_data(data: bytearray, alignment: int) -> None:
@@ -363,6 +363,30 @@ def _flatten_faces(faces: list[tuple[int, int, int]]) -> list[int]:
     return flattened
 
 
+def _find_common_bone_ancestor(
+    skeleton: ESK_File, bone_names: set[str], bone_index_by_name: dict[str, int]
+) -> str:
+    chains: list[list[int]] = []
+    for bone_name in bone_names:
+        bone_index = bone_index_by_name.get(bone_name)
+        if bone_index is None:
+            continue
+        chain: list[int] = []
+        visited: set[int] = set()
+        while 0 <= bone_index < len(skeleton.bones) and bone_index not in visited:
+            visited.add(bone_index)
+            chain.append(bone_index)
+            bone_index = skeleton.bones[bone_index].parent_index
+        chains.append(list(reversed(chain)))
+
+    common_index = None
+    for level in zip(*chains, strict=False):
+        if len(set(level)) != 1:
+            break
+        common_index = level[0]
+    return skeleton.bones[common_index].name if common_index is not None else ""
+
+
 def convert_emd_to_emo_parts(emd: EMD_File, skeleton: ESK_File) -> tuple[list[EMOPart], int]:
     bone_index_by_name = {
         bone.name: bone.index for bone in skeleton.bones if getattr(bone, "name", None)
@@ -372,14 +396,25 @@ def convert_emd_to_emo_parts(emd: EMD_File, skeleton: ESK_File) -> tuple[list[EM
 
     for model_index, model in enumerate(emd.models):
         part_name = (model.name or f"part_{model_index:02d}").strip() or f"part_{model_index:02d}"
-        linked_bone_name = part_name if part_name in bone_index_by_name else ""
+        if part_name in bone_index_by_name:
+            linked_bone_name = part_name
+        else:
+            weighted_bone_names = {
+                bone_name
+                for mesh in model.meshes
+                for submesh in mesh.submeshes
+                for triangle_group in submesh.triangle_groups
+                for bone_name in triangle_group.bone_names
+            }
+            linked_bone_name = _find_common_bone_ancestor(
+                skeleton, weighted_bone_names, bone_index_by_name
+            )
         linked_bone_index = (
             int(bone_index_by_name[linked_bone_name]) if linked_bone_name else 0xFFFF
         )
 
-        part = EMOPart(name=part_name, linked_bone_name=linked_bone_name, emg_files=[])
+        emg = EMGFile(linked_bone_index=linked_bone_index, meshes=[])
         for mesh in model.meshes:
-            emg = EMGFile(linked_bone_index=linked_bone_index, meshes=[])
             for submesh in mesh.submeshes:
                 tri_groups = [group for group in (submesh.triangle_groups or []) if group.indices]
                 if not tri_groups and submesh.faces:
@@ -422,11 +457,14 @@ def convert_emd_to_emo_parts(emd: EMD_File, skeleton: ESK_File) -> tuple[list[EM
                     emg.meshes.append(emg_mesh)
                     materials_count += 1
 
-            if emg.meshes:
-                part.emg_files.append(emg)
-
-        if part.emg_files:
-            parts.append(part)
+        if emg.meshes:
+            parts.append(
+                EMOPart(
+                    name=part_name,
+                    linked_bone_name=linked_bone_name,
+                    emg_files=[emg],
+                )
+            )
 
     return parts, materials_count
 
@@ -743,6 +781,7 @@ def _build_emo_skeleton_bytes(
     skeleton_bytes.extend(struct.pack("<I", 0))  # names offset
     skeleton_bytes.extend(struct.pack("<I", 0))  # IK2 offset
     skeleton_bytes.extend(struct.pack("<I", 0))  # IK2 names
+    extra_values_offset_field = len(skeleton_bytes)
     skeleton_bytes.extend(struct.pack("<I", 0))  # extra values
     skeleton_bytes.extend(struct.pack("<I", 0))  # abs matrix
     skeleton_bytes.extend(struct.pack("<I", 0))  # IK offset
@@ -778,6 +817,8 @@ def _build_emo_skeleton_bytes(
         skeleton_bytes.extend(str(bone.name).encode("utf8", errors="ignore") + b"\x00")
 
     _pad_data(skeleton_bytes, 16)
+    struct.pack_into("<I", skeleton_bytes, extra_values_offset_field, len(skeleton_bytes))
+    skeleton_bytes.extend(DEFAULT_BONE_EXTRA_BYTES * bone_count)
     return bytes(skeleton_bytes)
 
 

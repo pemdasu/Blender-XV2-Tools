@@ -12,6 +12,8 @@ from ..consts import (
     SOURCE_ROOT_NAME_PROP,
 )
 
+DEFAULT_BONE_EXTRA_BYTES = b"\x00\x00\x00\x00\xff\xff\x00\x00"
+
 
 class ESK_Bone:
     def __init__(
