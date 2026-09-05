@@ -15,6 +15,7 @@ from ...utils.blender_compat import (
     merge_selected_by_distance,
     set_custom_split_normals,
 )
+from ..bone_scale import scale_vector
 from ..consts import AUTO_SMOOTH_ANGLE_DEGREES
 from ..EMB import (
     _extract_dyt_lines,
@@ -44,6 +45,106 @@ from ..NSK.importer import (
     submesh_has_blend_weights as _submesh_has_blend_weights,
 )
 from .EMD import EMD_File, EMD_Submesh, parse_emd, set_sampler_custom_properties
+
+_BIND_SCALE_EPS = 1e-3
+
+
+def _grow_tiny_mesh(
+    obj: bpy.types.Object, arm_obj: bpy.types.Object, esk: ESK_File
+) -> None:
+    if arm_obj is None or arm_obj.data is None:
+        return
+
+    def bone_scale(index: int) -> mathutils.Vector:
+        bone = esk.bones[index]
+        if bone.matrix is None:
+            return mathutils.Vector((1.0, 1.0, 1.0))
+        return bone.matrix.decompose()[2]
+
+    def is_scaled(scale: mathutils.Vector) -> bool:
+        return (
+            abs(scale.x - 1.0) > _BIND_SCALE_EPS
+            or abs(scale.y - 1.0) > _BIND_SCALE_EPS
+            or abs(scale.z - 1.0) > _BIND_SCALE_EPS
+        )
+
+    total_cache: dict[int, mathutils.Vector] = {}
+
+    def total_scale(index: int) -> mathutils.Vector:
+        if index in total_cache:
+            return total_cache[index]
+        scale = bone_scale(index)
+        parent = esk.bones[index].parent_index
+        if 0 <= parent < len(esk.bones) and esk.bones[parent] is not esk.bones[index]:
+            parent_scale = total_scale(parent)
+            scale = scale_vector(scale, parent_scale)
+        total_cache[index] = scale
+        return scale
+
+    def scaled_parent(index: int) -> int | None:
+        current = index
+        while current >= 0:
+            if is_scaled(bone_scale(current)):
+                return current
+            parent = esk.bones[current].parent_index
+            if not (0 <= parent < len(esk.bones)) or esk.bones[parent] is esk.bones[current]:
+                return None
+            current = parent
+        return None
+
+    pivots: dict[str, tuple[mathutils.Vector, float]] = {}
+    for index, bone in enumerate(esk.bones):
+        scale = total_scale(index)
+        bind = min(scale.x, scale.y, scale.z)
+        if not is_scaled(scale) or bind <= 0.0:
+            continue
+        parent = scaled_parent(index)
+        if parent is None:
+            continue
+        parent_bone = arm_obj.data.bones.get(esk.bones[parent].name)
+        if parent_bone is None:
+            continue
+        pivots[bone.name] = (parent_bone.head_local.copy(), bind)
+    if not pivots:
+        return
+
+    group_pivots: dict[int, tuple[mathutils.Vector, float]] = {}
+    for group in obj.vertex_groups:
+        info = pivots.get(group.name)
+        if info is not None:
+            group_pivots[group.index] = info
+    if not group_pivots:
+        return
+
+    mesh = obj.data
+    used: dict[str, tuple[mathutils.Vector, float]] = {}
+    for vertex in mesh.vertices:
+        top_weight = 0.0
+        top: tuple[mathutils.Vector, float] | None = None
+        top_name = ""
+        for element in vertex.groups:
+            info = group_pivots.get(element.group)
+            if info is None or element.weight <= top_weight:
+                continue
+            top_weight = element.weight
+            top = info
+            top_name = obj.vertex_groups[element.group].name
+        if top is None:
+            continue
+        pivot, bind = top
+        vertex.co = pivot + (vertex.co - pivot) / bind
+        used[top_name] = top
+
+    if not used:
+        return
+
+    names = sorted(used)
+    flat: list[float] = []
+    for name in names:
+        pivot, bind = used[name]
+        flat.extend((pivot.x, pivot.y, pivot.z, bind))
+    obj["xv2_bind_bones"] = names
+    obj["xv2_bind_data"] = flat
 
 
 def bind_weights(
@@ -535,6 +636,25 @@ def _validate_face_indices(
     return face_indices
 
 
+MERGE_DISTANCE_MIN_EDGE_RATIO = 0.5
+
+
+def _clamp_merge_distance(mesh: bpy.types.Mesh, requested: float) -> float:
+    if requested <= 0.0:
+        return requested
+    vertices = mesh.vertices
+    shortest_edge = None
+    for edge in mesh.edges:
+        first_co = vertices[edge.vertices[0]].co
+        second_co = vertices[edge.vertices[1]].co
+        length = (first_co - second_co).length
+        if length > 1e-12 and (shortest_edge is None or length < shortest_edge):
+            shortest_edge = length
+    if shortest_edge is None:
+        return requested
+    return min(requested, shortest_edge * MERGE_DISTANCE_MIN_EDGE_RATIO)
+
+
 def import_emd(
     path: str,
     esk_override: str = "",
@@ -958,6 +1078,7 @@ def import_emd(
                         bind_weights_built(
                             obj, sub, arm_obj, esk, built_source_indices, built_palette_groups
                         )
+                    _grow_tiny_mesh(obj, arm_obj, esk)
                     remove_unused_vertex_groups(obj)
 
                 if split_submeshes:
@@ -971,10 +1092,11 @@ def import_emd(
                             me.calc_tangents()
 
                     if merge_by_distance:
+                        effective_distance = _clamp_merge_distance(me, merge_distance)
                         bpy.ops.object.mode_set(mode="EDIT")
                         bpy.ops.mesh.select_all(action="SELECT")
                         merge_selected_by_distance(
-                            merge_distance,
+                            effective_distance,
                             use_sharp_edge_from_normals=True,
                         )
                         bpy.ops.object.mode_set(mode="OBJECT")
@@ -1075,10 +1197,11 @@ def import_emd(
                 mesh_data.calc_tangents()
 
         if merge_by_distance:
+            effective_distance = _clamp_merge_distance(mesh_data, merge_distance)
             bpy.ops.object.mode_set(mode="EDIT")
             bpy.ops.mesh.select_all(action="SELECT")
             merge_selected_by_distance(
-                merge_distance,
+                effective_distance,
                 use_sharp_edge_from_normals=True,
             )
             bpy.ops.object.mode_set(mode="OBJECT")

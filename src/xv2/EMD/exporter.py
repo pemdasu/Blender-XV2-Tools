@@ -105,6 +105,34 @@ def _collect_vertex_data_for_material(
     vertices: list[EMD_Vertex] = []
     triangle_groups: list[EMD_Triangles] = []
     vertex_lookup: dict[tuple, int] = {}
+    shrunk_positions: dict[int, tuple] = {}
+
+    bind_names = list(obj.get("xv2_bind_bones", [])) if obj else []
+    bind_data = list(obj.get("xv2_bind_data", [])) if obj else []
+    shrink: dict[str, tuple[mathutils.Vector, float]] = {}
+    if bind_names and len(bind_data) == 4 * len(bind_names):
+        for i, name in enumerate(bind_names):
+            px, py, pz, bind = bind_data[4 * i : 4 * i + 4]
+            if bind > 0.0:
+                shrink[name] = (mathutils.Vector((px, py, pz)), bind)
+
+    def shrink_vert(vert: bpy.types.MeshVertex) -> tuple:
+        if not shrink:
+            return tuple(vert.co)
+        top_weight = 0.0
+        top = None
+        for element in vert.groups:
+            if element.weight <= top_weight or element.group >= len(obj.vertex_groups):
+                continue
+            info = shrink.get(obj.vertex_groups[element.group].name)
+            if info is None:
+                continue
+            top_weight = element.weight
+            top = info
+        if top is None:
+            return tuple(vert.co)
+        pivot, bind = top
+        return tuple(pivot + (vert.co - pivot) * bind)
 
     def gather_influences(vert: bpy.types.MeshVertex) -> list[tuple[str, float]]:
         influences: list[tuple[str, float]] = []
@@ -142,7 +170,9 @@ def _collect_vertex_data_for_material(
             v_idx = loop.vertex_index
             vert = mesh.vertices[v_idx]
             vtx = EMD_Vertex()
-            vtx.pos = tuple(vert.co)
+            if v_idx not in shrunk_positions:
+                shrunk_positions[v_idx] = shrink_vert(vert)
+            vtx.pos = shrunk_positions[v_idx]
             # Preserve sharp edges by using the per-loop split normal when available.
             vtx.normal = (
                 tuple(loop.normal)

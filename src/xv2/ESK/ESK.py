@@ -184,6 +184,9 @@ def build_armature(
         if bone_data.index in world_mats:
             return world_mats[bone_data.index]
         matrix = bone_data.matrix.copy()
+        loc, rot, scale = matrix.decompose()
+        if abs(scale.x - 1.0) > 1e-5 or abs(scale.y - 1.0) > 1e-5 or abs(scale.z - 1.0) > 1e-5:
+            matrix = mathutils.Matrix.LocRotScale(loc, rot, mathutils.Vector((1.0, 1.0, 1.0)))
         if (
             0 <= bone_data.parent_index < len(esk.bones)
             and esk.bones[bone_data.parent_index] is not bone_data

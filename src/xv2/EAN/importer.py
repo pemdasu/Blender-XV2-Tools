@@ -441,13 +441,13 @@ def import_ean_data(
         arm_obj.animation_data.action = action
 
         anim_frames: set[int] = set()
+        keyed_bones: set[str] = set()
 
         for node in anim.nodes:
             pose_bone = arm_obj.pose.bones.get(node.bone_name)
             if pose_bone is None:
                 continue
-
-            rest_local_ean = ean_local.get(node.bone_name, mathutils.Matrix.Identity(4))
+            keyed_bones.add(node.bone_name)
 
             pos_comp = _get_component(node, ComponentType.Position)
             rot_comp = _get_component(node, ComponentType.Rotation)
@@ -461,10 +461,19 @@ def import_ean_data(
             if scale_comp:
                 frames.update(keyframe.frame_index for keyframe in scale_comp.keyframes)
 
-            rest_loc, rest_rot, rest_scale = rest_local_ean.decompose()
+            bone = pose_bone.bone
+            if bone.parent is not None:
+                arm_rest = bone.parent.matrix_local.inverted_safe() @ bone.matrix_local
+            else:
+                arm_rest = bone.matrix_local.copy()
+            rest_loc, rest_rot, _rest_scale = arm_rest.decompose()
             default_pos = (rest_loc.x, rest_loc.y, rest_loc.z, 1.0)
             default_rot = (rest_rot.x, rest_rot.y, rest_rot.z, rest_rot.w)
-            default_scale = (rest_scale.x, rest_scale.y, rest_scale.z, 1.0)
+            default_scale = (1.0, 1.0, 1.0, 1.0)
+
+            rest_inv = mathutils.Matrix.LocRotScale(
+                rest_loc, rest_rot, mathutils.Vector((1.0, 1.0, 1.0))
+            ).inverted_safe()
 
             pose_bone.rotation_mode = "QUATERNION"
 
@@ -480,7 +489,7 @@ def import_ean_data(
                     mathutils.Vector(scale_vals[:3]),
                 )
 
-                delta = rest_local_ean.inverted_safe() @ baked_local
+                delta = rest_inv @ baked_local
 
                 loc, quat, scl = delta.decompose()
 
@@ -492,6 +501,19 @@ def import_ean_data(
                 pose_bone.keyframe_insert(data_path="scale", frame=frame)
 
         if anim_frames:
+            first_frame = min(anim_frames)
+            identity_quat = mathutils.Quaternion((1.0, 0.0, 0.0, 0.0))
+            for pose_bone in arm_obj.pose.bones:
+                if pose_bone.name in keyed_bones:
+                    continue
+                pose_bone.rotation_mode = "QUATERNION"
+                pose_bone.location = (0.0, 0.0, 0.0)
+                pose_bone.keyframe_insert(data_path="location", frame=first_frame)
+                pose_bone.rotation_quaternion = identity_quat
+                pose_bone.keyframe_insert(data_path="rotation_quaternion", frame=first_frame)
+                pose_bone.scale = (1.0, 1.0, 1.0)
+                pose_bone.keyframe_insert(data_path="scale", frame=first_frame)
+
             action.frame_range = (min(anim_frames), max(anim_frames))
 
     return arm_obj

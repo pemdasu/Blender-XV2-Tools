@@ -348,6 +348,16 @@ def _patch_skeleton_rest_transforms(
             if local_mat is None:
                 continue
 
+            t_off = skin_rel + 48 * bone_index
+            src_sx, src_sy, src_sz, src_sw = struct.unpack_from("<4f", data, t_off + 32)
+            src_scale = (src_sx * src_sw, src_sy * src_sw, src_sz * src_sw)
+            if (
+                abs(src_scale[0] - 1.0) > 1e-5
+                or abs(src_scale[1] - 1.0) > 1e-5
+                or abs(src_scale[2] - 1.0) > 1e-5
+            ):
+                continue
+
             esk_bone_index = bone_indices.get(bone_name)
             if esk_bone_index is not None:
                 parent_scale = get_inherited_parent_scale(
@@ -359,7 +369,6 @@ def _patch_skeleton_rest_transforms(
                 local_mat = bake_parent_scale_into_matrix(local_mat, parent_scale)
 
             loc, rot, scale = local_mat.decompose()
-            t_off = skin_rel + 48 * bone_index
             struct.pack_into("<4f", data, t_off + 0, loc.x, loc.y, loc.z, 1.0)
             struct.pack_into("<4f", data, t_off + 16, rot.x, rot.y, rot.z, rot.w)
             struct.pack_into("<4f", data, t_off + 32, scale.x, scale.y, scale.z, 1.0)
@@ -424,9 +433,10 @@ def _build_animation_bytes(
         export_bones = set(frames_by_bone.keys()) | constrained_bones
         if export_bones:
             key_frames = set(global_frames)
+            curve_range = getattr(action, "curve_frame_range", None) or action.frame_range
             try:
-                range_start = int(round(action.frame_range[0]))
-                range_end = int(round(action.frame_range[1]))
+                range_start = int(round(curve_range[0]))
+                range_end = int(round(curve_range[1]))
             except (AttributeError, TypeError, ValueError):
                 range_start = min(key_frames) if key_frames else 0
                 range_end = max(key_frames) if key_frames else 0
