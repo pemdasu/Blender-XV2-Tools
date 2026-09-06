@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+
+- Shader previews for `TOON_UNIF_SCROLL` and its animated UV scrolling.
+- Rim-light overwrite support for `_OWR` shader variants, including `TOON_UNIF_ENV_OWR`.
+- Standard alpha blending for supported character shaders, including transparent materials such as glasses.
+- Camera animation export support for old Unleashed camera add-on rigs.
+
+### Fixed
+
+- EMO and EMA export issues that caused missing parts, broken animation, incorrect rotation origins, and shading problems in-game.
+- Import issues with models that use very small bone scales like `XBF_000_Face_forehead`.
+- Skeleton export now uses edited armature bone transforms.
+- Animation baking now has an option to bake with "Visual Keying" on export.
+- SCD imports now keep shared materials and textures when no separate EMM exists.
+- Camera export no longer repeatedly appends `.cam.ean` to the filename.
+- Menu icons sometimes not loading properly.
+
+### Changed
+
+- Imports now set the scene’s color-management view to Standard.
+
+### Notes
+
+- Additive and subtractive blending are unsupported.
+- SCD files without their own materials require the main model to be imported first, or selected in the same import.
+
 ## 1.1.0
 
 - Added EMO import and export support
