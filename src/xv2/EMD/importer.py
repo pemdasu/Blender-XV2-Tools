@@ -1158,13 +1158,27 @@ def import_emd(
 
                 has_uv2_data = any(uv2 != (0.0, 0.0) for uv2 in built_uv2s)
                 emm_info = emm_by_name.get(sub.name.lower())
+                shared_material = None
+                if source_tag == "EMD" and stem.lower().endswith("_scd") and not emm_path:
+                    existing = bpy.data.materials.get(sub.name)
+                    if existing is not None and existing.get("emm_shader"):
+                        shared_material = existing if reuse_materials else existing.copy()
+                    else:
+                        _warn_once(
+                            f"Material '{sub.name}' is missing. "
+                            "Import the main model before this SCD."
+                        )
 
-                material = create_material(
-                    sub.name,
-                    source_format=source_tag,
-                    emm_shader=getattr(emm_info, "shader", None),
-                    force_shader_template=force_shader_template,
-                    reuse_materials=reuse_materials,
+                material = (
+                    shared_material
+                    if shared_material is not None
+                    else create_material(
+                        sub.name,
+                        source_format=source_tag,
+                        emm_shader=getattr(emm_info, "shader", None),
+                        force_shader_template=force_shader_template,
+                        reuse_materials=reuse_materials,
+                    )
                 )
                 if me.materials:
                     me.materials[0] = material
@@ -1182,7 +1196,7 @@ def import_emd(
                         key = f"emm_param_{p.name}"
                         if key not in material:
                             material[key] = p.value
-                if source_behavior.use_placeholder_material:
+                if shared_material is None and source_behavior.use_placeholder_material:
                     _apply_nsk_placeholder_material(
                         material,
                         sub.texture_sampler_defs,
@@ -1192,7 +1206,7 @@ def import_emd(
                         has_uv2=has_uv2_data,
                         warn=_warn_once,
                     )
-                else:
+                elif shared_material is None:
                     _apply_shader_material(
                         material,
                         sub.texture_sampler_defs,
@@ -1203,7 +1217,7 @@ def import_emd(
                         warn=_warn_once,
                     )
 
-                if sub.texture_sampler_defs:
+                if shared_material is None and sub.texture_sampler_defs:
                     set_sampler_custom_properties(material, sub.texture_sampler_defs)
                     sampler_defs_to_collection(material, sub.texture_sampler_defs)
                 material["emd_vertex_flags"] = int(sub.vertex_flags)
