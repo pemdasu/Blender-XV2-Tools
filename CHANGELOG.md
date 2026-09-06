@@ -4,6 +4,7 @@
 
 ### Added
 
+- Support for blender versions 4.0.0 through 5.2.1.
 - Shader previews for `TOON_UNIF_SCROLL` and its animated UV scrolling.
 - Rim-light overwrite support for `_OWR` shader variants, including `TOON_UNIF_ENV_OWR`.
 - Standard alpha blending for supported character shaders, including transparent materials such as glasses.
