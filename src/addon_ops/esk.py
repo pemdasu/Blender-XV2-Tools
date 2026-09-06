@@ -27,6 +27,7 @@ class IMPORT_OT_esk(Operator, ImportHelper):
     def execute(self, context):
         arm = import_esk(self.filepath, preserve_bone_axes=self.preserve_bone_axes)
         if arm:
+            context.scene.view_settings.view_transform = "Standard"
             self.report({"INFO"}, f"Imported ESK armature {arm.name}")
             return {"FINISHED"}
         self.report({"ERROR"}, "Failed to import ESK.")

@@ -1275,6 +1275,7 @@ def import_emd(
             )
             bpy.ops.object.mode_set(mode="OBJECT")
 
+    bpy.context.scene.view_settings.view_transform = "Standard"
     if return_armature:
         return arm_obj, esk
 

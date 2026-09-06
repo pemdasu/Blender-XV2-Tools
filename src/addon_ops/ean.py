@@ -16,6 +16,7 @@ class IMPORT_OT_cam_ean(Operator, ImportHelper):
     def execute(self, context):
         created = import_cam_ean(self.filepath)
         if created:
+            context.scene.view_settings.view_transform = "Standard"
             self.report({"INFO"}, "Imported camera EAN")
             return {"FINISHED"}
 
@@ -59,6 +60,7 @@ class IMPORT_OT_ean(Operator, ImportHelper):
             preserve_bone_axes=self.preserve_bone_axes,
         )
         if arm:
+            context.scene.view_settings.view_transform = "Standard"
             self.report({"INFO"}, f"Imported EAN onto armature {arm.name}")
             return {"FINISHED"}
         self.report({"WARNING"}, "Nothing imported.")

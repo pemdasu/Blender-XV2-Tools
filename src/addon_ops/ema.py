@@ -43,6 +43,7 @@ class IMPORT_OT_ema(Operator, ImportHelper):
             return {"CANCELLED"}
 
         if arm:
+            context.scene.view_settings.view_transform = "Standard"
             self.report({"INFO"}, f"Imported EMA onto armature {arm.name}")
             return {"FINISHED"}
         self.report({"WARNING"}, "Nothing imported.")
