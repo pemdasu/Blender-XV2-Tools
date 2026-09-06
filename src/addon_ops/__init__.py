@@ -169,13 +169,19 @@ def register_icons():
             raise FileNotFoundError(f"Missing required icon file: {icon_path} ({icon_key})")
 
     _custom_icons = bpy.utils.previews.new()
-    _custom_icons.load("xv2_assets", str(_xv2_assets_icon_path), "IMAGE")
-    _xv2_assets_icon_id = int(_custom_icons["xv2_assets"].icon_id)
+    preview = _custom_icons.load(
+        "xv2_assets", str(_xv2_assets_icon_path), "IMAGE", force_reload=True
+    )
+    if not all(preview.icon_size):
+        raise RuntimeError(f"Could not load icon: {_xv2_assets_icon_path}")
+    _xv2_assets_icon_id = int(preview.icon_id)
     _entry_icon_ids = {}
     for icon_key, icon_path in _entry_icon_paths.items():
         icon_name = f"xv2_{icon_key}"
-        _custom_icons.load(icon_name, str(icon_path), "IMAGE")
-        _entry_icon_ids[icon_key] = int(_custom_icons[icon_name].icon_id)
+        preview = _custom_icons.load(icon_name, str(icon_path), "IMAGE", force_reload=True)
+        if not all(preview.icon_size):
+            raise RuntimeError(f"Could not load icon: {icon_path}")
+        _entry_icon_ids[icon_key] = int(preview.icon_id)
 
 
 def unregister_icons():
