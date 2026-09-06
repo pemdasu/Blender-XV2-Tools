@@ -309,9 +309,13 @@ def _resolve_shader_template(
     emm_shader: str | None = None,
     force_shader_template: str | None = None,
 ) -> str:
+    shader_name = (emm_shader or "").strip().upper()
+    if shader_name.startswith("TOON_UNIF") and shader_name.endswith("_OWR"):
+        return "unif_env_owr_shader" if "UNIF_ENV" in shader_name else "owr_shader"
+    if shader_name == "TOON_UNIF_SCROLL":
+        return "scroll_shader"
     if force_shader_template:
         return force_shader_template
-    shader_name = (emm_shader or "").strip().upper()
     if "UNIF_ENV" in shader_name:
         return "unif_env_shader"
     format_tag = (source_format or "EMD").strip().upper()
@@ -430,6 +434,28 @@ def _image_from_sampler(
     )
 
 
+def _configure_uv_scroll(mat, params, sampler_defs):
+    mapping = mat.node_tree.nodes["XV2_SCROLL_UV"]
+    scale_u = sampler_defs[0].scale_u if sampler_defs else 1.0
+    scale_v = sampler_defs[0].scale_v if sampler_defs else 1.0
+    mapping.inputs["Scale"].default_value = (scale_u, scale_v, 1.0)
+    # EMD import flips V, so Blender uses a positive V scroll and a tile offset.
+    for index, name in enumerate(("TexScrl0U", "TexScrl0V")):
+        speed = float(params.get(name, 0.0))
+        driver = mapping.inputs["Location"].driver_add("default_value", index).driver
+        driver.type = "SCRIPTED"
+        while driver.variables:
+            driver.variables.remove(driver.variables[0])
+        for variable_name, path in (("fps", "render.fps"), ("fps_base", "render.fps_base")):
+            variable = driver.variables.new()
+            variable.name = variable_name
+            variable.targets[0].id_type = "SCENE"
+            variable.targets[0].id = bpy.context.scene
+            variable.targets[0].data_path = path
+        offset = 0.0 if index == 0 else 1.0 - scale_v
+        driver.expression = f"{offset!r} + frame * fps_base / fps * {speed!r}"
+
+
 def _apply_shader_material(
     mat: bpy.types.Material,
     sampler_defs,
@@ -457,6 +483,23 @@ def _apply_shader_material(
     dual_toggle = nodes.get("XV2_DUAL_EMB_TOGGLE")
     msk_toggle = nodes.get("XV2_MSK_EMB_TOGGLE")
     shader_name = (getattr(emm_info, "shader", "") or "").upper()
+    params = {param.name: param.value for param in emm_info.params} if emm_info else {}
+    if shader_name == "TOON_UNIF_SCROLL":
+        _configure_uv_scroll(mat, params, sampler_defs)
+    alpha_node = nodes.get("XV2_ALPHA_BLEND")
+    if alpha_node:
+        alpha_enabled = int(params.get("AlphaBlend", 0)) == 1
+        blend_type = int(params.get("AlphaBlendType", 0))
+        supported = shader_name.startswith("TOON_UNIF") and blend_type == 0
+        alpha_node.inputs["Enabled"].default_value = float(alpha_enabled and supported)
+        if alpha_enabled and not supported and warn:
+            warn(
+                f"Alpha blending for '{shader_name}' with blend type {blend_type} is not supported."
+            )
+        if bpy.app.version >= (4, 2, 0):
+            mat.surface_render_method = "BLENDED" if alpha_enabled and supported else "DITHERED"
+        else:
+            mat.blend_method = "BLEND" if alpha_enabled and supported else "OPAQUE"
     use_unif_env = "UNIF_ENV" in shader_name
     use_toon_uniffx = "TOON_UNIFFX" in shader_name
     toon_uniffx_dyt_entry = None
@@ -549,6 +592,7 @@ def _apply_shader_material(
             "XV2_DYT_RIM": rim,
             "XV2_DYT_SPEC": spec,
             "XV2_DYT_DUAL": secondary,
+            "XV2_DYT_OWR": secondary,
         }
         for node_name, img_obj in assign_map.items():
             node = nodes.get(node_name)
